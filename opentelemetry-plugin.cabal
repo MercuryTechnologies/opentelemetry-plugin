@@ -14,8 +14,10 @@ extra-doc-files:    CHANGELOG.md
 library
     exposed-modules:  OpenTelemetry.Plugin
     build-depends:    base >=4.15.0.0 && < 5
+                    , bytestring
                     , containers
                     , hs-opentelemetry-api
+                    , hs-opentelemetry-propagator-w3c
                     , hs-opentelemetry-sdk
                     , text
     other-modules:    Paths_opentelemetry_plugin
