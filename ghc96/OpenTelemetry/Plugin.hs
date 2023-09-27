@@ -2,119 +2,31 @@
 {-# LANGUAGE NamedFieldPuns    #-}
 {-# LANGUAGE OverloadedStrings #-}
 
+{-| This module provides a GHC plugin that will export open telemetry metrics
+    for your build.  Specifically, this plugin will create one span per module
+    (recording how long that module took to build) and one sub-span per phase
+    of that module's build (recording how long that phase took).
+-}
 module OpenTelemetry.Plugin
     ( -- * Plugin
       plugin
     ) where
 
-import Control.Concurrent.MVar (MVar)
 import Control.Monad.IO.Class (MonadIO(..))
-import Data.ByteString (ByteString)
-import Data.Set (Set)
-import Data.Text (Text)
 import GHC.Types.Target (Target(..), TargetId(..))
 import OpenTelemetry.Context (Context)
-import OpenTelemetry.Trace (Span)
-import Prelude hiding (span)
 
 import GHC.Plugins
-    ( CorePluginPass
-    , CoreToDo(..)
+    ( CoreToDo(..)
     , GenModule(..)
     , HscEnv(..)
-    , ModuleName(..)
     , Plugin(..)
     )
-import OpenTelemetry.Trace
-    ( InstrumentationLibrary(..)
-    , SpanArguments(..)
-    , Tracer
-    , TracerProvider
-    )
-
-import qualified Control.Concurrent.MVar as MVar
 import qualified Control.Monad as Monad
-import qualified Data.Set as Set
 import qualified Data.Text as Text
-import qualified Data.Text.Encoding as Text.Encoding
-import qualified Data.Version as Version
 import qualified GHC.Plugins as Plugins
 import qualified GHC.Utils.Outputable as Outputable
-import qualified OpenTelemetry.Context as Context
-import qualified OpenTelemetry.Trace as Trace
-import qualified OpenTelemetry.Trace.Core as Trace.Core
-import qualified OpenTelemetry.Propagator.W3CBaggage as W3CBaggage
-import qualified OpenTelemetry.Propagator.W3CTraceContext as W3CTraceContext
-import qualified Paths_opentelemetry_plugin as Paths
-import qualified System.Environment as Environment
-import qualified System.IO.Unsafe as Unsafe
-
-{-| Note: We don't properly shut this down using `shutdownTracerProvider`, but
-    all that the shutdown does is flush metrics, so instead we flush metrics
-    at the end of compilation to make up for the lack of a proper shutdown.
--}
-tracerProvider :: TracerProvider
-tracerProvider = Unsafe.unsafePerformIO Trace.initializeGlobalTracerProvider
-{-# NOINLINE tracerProvider #-}
-
-{-| This is used for communicating between `driverPlugin` and
-    `installCoreToDos`, because only `driverPlugin` has access to the full
-    module graph, but there isn't a good way within the `Plugin` API for them
-    to share that information other than a global variable.
--}
-rootModuleNamesMVar :: MVar (Set ModuleName)
-rootModuleNamesMVar = Unsafe.unsafePerformIO MVar.newEmptyMVar
-{-# NOINLINE rootModuleNamesMVar #-}
-
-{-| We're intentionally **NOT** using `OpenTelemetry.Context.ThreadLocal`
-    here since the `Plugin` logic doesn't necessarily run in a single thread
-    (`ghc` builds can be multi-threaded).  Instead, we provide our own
-    `Context` global variable.
--}
-topLevelContextMVar :: MVar Context
-topLevelContextMVar = Unsafe.unsafePerformIO MVar.newEmptyMVar
-{-# NOINLINE topLevelContextMVar #-}
-
-tracer :: Tracer
-tracer =
-    Trace.makeTracer tracerProvider instrumentationLibrary Trace.tracerOptions
-  where
-    instrumentationLibrary =
-        InstrumentationLibrary
-            { libraryName    = "opentelemetry-plugin"
-            , libraryVersion = Text.pack (Version.showVersion Paths.version)
-            }
-
-makeWrapperPluginPasses
-    :: MonadIO io
-    => IO Context
-    -> Text
-    -> io (IO Context, CorePluginPass, CorePluginPass)
-makeWrapperPluginPasses getParentContext label = liftIO do
-    spanMVar           <- liftIO MVar.newEmptyMVar
-    currentContextMVar <- liftIO MVar.newEmptyMVar
-
-    let beginPass modGuts = liftIO do
-            parentContext <- getParentContext
-
-            passSpan <- Trace.createSpan tracer parentContext label Trace.defaultSpanArguments
-
-            MVar.putMVar spanMVar passSpan
-
-            let currentContext = Context.insertSpan passSpan parentContext
-
-            MVar.putMVar currentContextMVar currentContext
-
-            pure modGuts
-
-    let endPass modGuts = liftIO do
-            passSpan <- MVar.readMVar spanMVar
-
-            Trace.endSpan passSpan Nothing
-
-            pure modGuts
-
-    pure (MVar.readMVar currentContextMVar, beginPass, endPass)
+import qualified OpenTelemetry.Plugin.Shared as Shared
 
 wrapTodo :: MonadIO io => IO Context -> CoreToDo -> io CoreToDo
 wrapTodo getParentContext todo =
@@ -122,72 +34,30 @@ wrapTodo getParentContext todo =
         CoreDoPasses passes ->
             fmap CoreDoPasses (traverse (wrapTodo getParentContext) passes)
 
-        _ -> do
+        _ -> liftIO do
             let sdoc = Outputable.ppr todo
 
             let label =
                     Outputable.showSDocOneLine Outputable.defaultSDocContext sdoc
 
             (_, beginPass, endPass) <- do
-                makeWrapperPluginPasses getParentContext (Text.pack label)
+                Shared.makeWrapperPluginPasses getParentContext (Text.pack label)
 
             let beginPluginPass =
-                    CoreDoPluginPass ("begin " <> label) beginPass
+                    CoreDoPluginPass ("begin " <> label) \modGuts -> liftIO do
+                        beginPass
+
+                        pure modGuts
 
             let endPluginPass =
-                    CoreDoPluginPass ("end " <> label) endPass
+                    CoreDoPluginPass ("end " <> label) \modGuts -> liftIO do
+                        endPass
+
+                        pure modGuts
 
             pure (CoreDoPasses [ beginPluginPass, todo, endPluginPass ])
 
-getTopLevelSpan :: IO Span
-getTopLevelSpan = do
-    traceParent <- lookupEnv "TRACEPARENT"
-    traceState  <- lookupEnv "TRACESTATE"
-
-    case W3CTraceContext.decodeSpanContext traceParent traceState of
-        Just spanContext ->
-            pure (Trace.Core.wrapSpanContext spanContext)
-
-        Nothing -> do
-            -- If we're not inheriting a span from
-            -- `TRACEPARENT`/`TRACESTATE`, then create a zero-duration span
-            -- whose sole purpose is to be a parent span for each module's
-            -- spans.
-            --
-            -- Ideally we'd like this span's duration to last for the
-            -- entirety of compilation, but there isn't a good way to end
-            -- the span when compilation is done.  Also, we still need
-            -- *some* parent span for each module's spans, otherwise an
-            -- entirely new trace will be created for each new span.
-            -- Creating a zero-duration span is the least-worst solution.
-            --
-            -- Note that there aren't any issues with the child spans
-            -- lasting longer than the parent span.  This is supported by
-            -- open telemetry and the Haskell API.
-            timestamp <- Trace.Core.getTimestamp
-
-            let arguments =
-                    Trace.defaultSpanArguments
-                        { startTime = Just timestamp }
-
-            span <- Trace.createSpan tracer Context.empty "opentelemetry GHC plugin" arguments
-
-            Trace.endSpan span (Just timestamp)
-
-            pure span
-
-getTopLevelContext :: IO Context
-getTopLevelContext = do
-    maybeBytes <- lookupEnv "BAGGAGE"
-    case maybeBytes >>= W3CBaggage.decodeBaggage of
-        Nothing      -> pure Context.empty
-        Just baggage -> pure (Context.insertBaggage baggage Context.empty)
-
-lookupEnv :: String -> IO (Maybe ByteString)
-lookupEnv = fmap (fmap (fmap encode)) Environment.lookupEnv
-  where
-    encode = Text.Encoding.encodeUtf8 . Text.pack
-
+-- | GHC plugin that exports open telemetry metrics about the build
 plugin :: Plugin
 plugin =
     Plugins.defaultPlugin
@@ -197,20 +67,14 @@ plugin =
         }
   where
     driverPlugin _ hscEnv@HscEnv{ hsc_targets } = do
-        let rootModuleNames = Set.fromList do
+        let rootModuleNames = do
                 Target{ targetId = TargetModule rootModuleName } <- hsc_targets
 
-                pure rootModuleName
+                pure (Plugins.moduleNameString rootModuleName)
 
-        MVar.putMVar rootModuleNamesMVar rootModuleNames
+        Shared.setRootModuleNames rootModuleNames
 
-        span <- getTopLevelSpan
-
-        context <- getTopLevelContext
-
-        let contextWithSpan = Context.insertSpan span context
-
-        MVar.putMVar topLevelContextMVar contextWithSpan
+        Shared.initializeTopLevelContext
 
         pure hscEnv
 
@@ -222,40 +86,35 @@ plugin =
         let moduleText = Text.pack (Plugins.moduleNameString moduleName_)
 
         (getCurrentContext, firstPluginPass, lastPluginPass) <- do
-            makeWrapperPluginPasses (MVar.readMVar topLevelContextMVar) moduleText
+            liftIO (Shared.makeWrapperPluginPasses Shared.getTopLevelContext moduleText)
 
-        let firstPass = CoreDoPluginPass "begin module" firstPluginPass
+        let firstPass =
+                CoreDoPluginPass "begin module" \modGuts -> liftIO do
+                    firstPluginPass
+
+                    pure modGuts
 
         let lastPass =
-                CoreDoPluginPass "end module" \modGuts -> do
-                    newModGuts <- lastPluginPass modGuts
+                CoreDoPluginPass "end module" \modGuts -> liftIO do
+                    lastPluginPass
 
-                    liftIO do
-                        rootModuleNames <- MVar.readMVar rootModuleNamesMVar
+                    isRoot <- Shared.isRootModule (Plugins.moduleNameString moduleName_)
 
-                        -- Flush metrics if we're compiling one of the root
-                        -- modules.  This is to work around the fact that we
-                        -- don't have a proper way to finalize the
-                        -- `TracerProvider` (since the finalizer would normally
-                        -- be responsible for flushing any last metrics).
-                        --
-                        -- You might wonder: why don't we end the top-level
-                        -- span here?  Well, we don't know which one of the root
-                        -- modules will be the last one to be compiled.
-                        -- However, flushing once per root module is still fine
-                        -- because flushing is safe to run at any time and in
-                        -- practice there will only be a few root modules.
-                        Monad.when (Set.member moduleName_ rootModuleNames) do
-                            -- We can't check the result yet because
-                            -- `FlushResult` is not exported by
-                            -- `hs-opentelemetry-api`
-                            --
-                            -- https://github.com/iand675/hs-opentelemetry/pull/96
-                            _ <- Trace.Core.forceFlushTracerProvider tracerProvider Nothing
+                    -- Flush metrics if we're compiling one of the root
+                    -- modules.  This is to work around the fact that we don't
+                    -- have a proper way to finalize the `TracerProvider`
+                    -- (since the finalizer would normally be responsible for
+                    -- flushing any last metrics).
+                    --
+                    -- You might wonder: why don't we end the top-level span
+                    -- here?  Well, we don't know which one of the root modules
+                    -- will be the last one to be compiled.  However, flushing
+                    -- once per root module is still fine because flushing is
+                    -- safe to run at any time and in practice there will only
+                    -- be a few root modules.
+                    Monad.when isRoot Shared.flush
 
-                            pure ()
-
-                    pure newModGuts
+                    pure modGuts
 
         newTodos <- traverse (wrapTodo getCurrentContext) todos
 
