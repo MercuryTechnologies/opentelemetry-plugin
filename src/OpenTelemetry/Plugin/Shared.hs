@@ -23,6 +23,8 @@ module OpenTelemetry.Plugin.Shared
 
       -- * Flushing
     , flush
+
+    , getSampler
     ) where
 
 import Control.Concurrent.MVar (MVar)
@@ -31,17 +33,24 @@ import Data.ByteString (ByteString)
 import Data.Set (Set)
 import Data.Text (Text)
 import OpenTelemetry.Context (Context)
+import OpenTelemetry.Trace.Sampler (Sampler(..), SamplingResult(..))
 import Prelude hiding (span)
+import System.Random.MWC (GenIO)
 
 import OpenTelemetry.Trace
-    ( InstrumentationLibrary(..)
+    ( Attribute(..)
+    , PrimitiveAttribute(..)
+    , InstrumentationLibrary(..)
     , Span
     , SpanArguments(..)
+    , SpanContext(..)
     , Tracer
     , TracerProvider
+    , TracerProviderOptions(..)
     )
 
 import qualified Control.Concurrent.MVar as MVar
+import qualified Data.HashMap.Strict as HashMap
 import qualified Data.Set as Set
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as Text.Encoding
@@ -51,9 +60,65 @@ import qualified OpenTelemetry.Propagator.W3CBaggage as W3CBaggage
 import qualified OpenTelemetry.Propagator.W3CTraceContext as W3CTraceContext
 import qualified OpenTelemetry.Trace as Trace
 import qualified OpenTelemetry.Trace.Core as Trace.Core
+import qualified OpenTelemetry.Trace.Sampler as Sampler
+import qualified OpenTelemetry.Trace.TraceState as TraceState
 import qualified Paths_opentelemetry_plugin as Paths
 import qualified System.Environment as Environment
 import qualified System.IO.Unsafe as Unsafe
+import qualified System.Random.MWC as MWC
+import qualified Text.Read as Read
+
+{-| Very large Haskell builds can generate an enormous number of spans,
+    but none of the stock samplers provide a way to sample a subset of
+    the `Span`s within a trace.
+
+    This adds a new "spanratio" sampler which can be used to sample subset of
+    module spans.
+-}
+getSampler :: IO (Maybe Sampler)
+getSampler = do
+    maybeSampler <- Environment.lookupEnv "OTEL_TRACES_SAMPLER"
+
+    maybeRatio <- Environment.lookupEnv "OTEL_TRACES_SAMPLER_ARG"
+
+    pure do
+        "spanratio" <- maybeSampler
+        ratioString <- maybeRatio
+        ratio <- Read.readMaybe ratioString
+        pure (spanRatioBased ratio)
+
+{-| Like a lot of other uses of `unsafePerformIO` in this module, we're doing
+    this because the plugin interface doesn't provide a way for us to acquire
+    resources before returning the plugin.
+-}
+generator :: GenIO
+generator = Unsafe.unsafePerformIO MWC.createSystemRandom
+{-# NOINLINE generator #-}
+
+spanRatioBased :: Double -> Sampler
+spanRatioBased fraction = Sampler
+    { getDescription =
+          "SpanRatioBased{" <> Text.pack (show fraction) <> "}"
+    , shouldSample = \context traceId_ name spanArguments -> do
+        case HashMap.lookup "sample" (attributes spanArguments) of
+            Just (AttributeValue (BoolAttribute True)) -> do
+                random <- MWC.uniformR (0, 1) generator
+
+                let samplingResult =
+                        if random < fraction then RecordAndSample else Drop
+
+                traceState_ <- case Context.lookupSpan context of
+                    Nothing ->
+                        pure TraceState.empty
+
+                    Just span ->
+                        fmap traceState (Trace.Core.getSpanContext span)
+
+                pure (samplingResult, HashMap.empty, traceState_)
+
+            _ ->
+                shouldSample Sampler.alwaysOn context traceId_ name spanArguments
+    }
 
 {-| Note: We don't properly shut this down using `shutdownTracerProvider`, but
     all that the shutdown does is flush metrics, so instead we flush metrics
@@ -61,7 +126,21 @@ import qualified System.IO.Unsafe as Unsafe
     proper shutdown.
 -}
 tracerProvider :: TracerProvider
-tracerProvider = Unsafe.unsafePerformIO Trace.initializeGlobalTracerProvider
+tracerProvider = Unsafe.unsafePerformIO do
+    (processors, options) <- Trace.getTracerProviderInitializationOptions
+
+    maybeSampler <- getSampler
+
+    let newOptions =
+            case maybeSampler of
+                Nothing      -> options
+                Just sampler -> options{ tracerProviderOptionsSampler = sampler }
+
+    tracerProvider_ <- Trace.createTracerProvider processors newOptions
+
+    Trace.setGlobalTracerProvider tracerProvider_
+
+    pure tracerProvider_
 {-# NOINLINE tracerProvider #-}
 
 tracer :: Tracer
@@ -83,19 +162,31 @@ tracer =
     `Context`).
 -}
 makeWrapperPluginPasses
-    :: IO Context
+    :: Bool
+      -- ^ Whether to sample a subset of spans
+    -> IO Context
        -- ^ Action to ead the parent span's `Context`
     -> Text
        -- ^ Label for the current span
     -> IO (IO Context, IO (), IO ())
-makeWrapperPluginPasses getParentContext label = liftIO do
+makeWrapperPluginPasses sample getParentContext label = liftIO do
     spanMVar           <- liftIO MVar.newEmptyMVar
     currentContextMVar <- liftIO MVar.newEmptyMVar
 
     let beginPass = do
             parentContext <- getParentContext
 
-            passSpan <- Trace.createSpan tracer parentContext label Trace.defaultSpanArguments
+            let spanArguments =
+                    if sample
+                    then
+                        Trace.defaultSpanArguments
+                            { attributes =
+                                HashMap.singleton "sample" (AttributeValue (BoolAttribute True))
+                            }
+                    else
+                        Trace.defaultSpanArguments
+
+            passSpan <- Trace.createSpan tracer parentContext label spanArguments
 
             MVar.putMVar spanMVar passSpan
 
@@ -122,9 +213,9 @@ topLevelContextMVar = Unsafe.unsafePerformIO MVar.newEmptyMVar
 getTopLevelSpan :: IO Span
 getTopLevelSpan = do
     traceParent <- lookupEnv "TRACEPARENT"
-    traceState  <- lookupEnv "TRACESTATE"
+    traceState_ <- lookupEnv "TRACESTATE"
 
-    case W3CTraceContext.decodeSpanContext traceParent traceState of
+    case W3CTraceContext.decodeSpanContext traceParent traceState_ of
         Just spanContext ->
             pure (Trace.Core.wrapSpanContext spanContext)
 

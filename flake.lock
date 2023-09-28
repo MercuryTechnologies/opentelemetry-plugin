@@ -1,5 +1,17 @@
 {
   "nodes": {
+    "all-cabal-hashes": {
+      "flake": false,
+      "locked": {
+        "narHash": "sha256-gEL/53v6/8oU2beexEAKFkZFDoTSbMKia7JZBmE+okM=",
+        "type": "file",
+        "url": "https://api.github.com/repos/commercialhaskell/all-cabal-hashes/tarball/c314b1bfabd37d30d2f315a5a322323ebbd98acb"
+      },
+      "original": {
+        "type": "file",
+        "url": "https://api.github.com/repos/commercialhaskell/all-cabal-hashes/tarball/c314b1bfabd37d30d2f315a5a322323ebbd98acb"
+      }
+    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1685566663,
@@ -18,6 +30,7 @@
     },
     "root": {
       "inputs": {
+        "all-cabal-hashes": "all-cabal-hashes",
         "nixpkgs": "nixpkgs",
         "utils": "utils"
       }
