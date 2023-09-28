@@ -3,18 +3,13 @@
     "all-cabal-hashes": {
       "flake": false,
       "locked": {
-        "lastModified": 1695934786,
-        "narHash": "sha256-g38SlwRKWY29/ImD1oO+svzOaCPme1Z7KWR2qmRyaPQ=",
-        "owner": "commercialhaskell",
-        "repo": "all-cabal-hashes",
-        "rev": "c314b1bfabd37d30d2f315a5a322323ebbd98acb",
-        "type": "github"
+        "narHash": "sha256-gEL/53v6/8oU2beexEAKFkZFDoTSbMKia7JZBmE+okM=",
+        "type": "file",
+        "url": "https://api.github.com/repos/commercialhaskell/all-cabal-hashes/tarball/c314b1bfabd37d30d2f315a5a322323ebbd98acb"
       },
       "original": {
-        "owner": "commercialhaskell",
-        "ref": "hackage",
-        "repo": "all-cabal-hashes",
-        "type": "github"
+        "type": "file",
+        "url": "https://api.github.com/repos/commercialhaskell/all-cabal-hashes/tarball/c314b1bfabd37d30d2f315a5a322323ebbd98acb"
       }
     },
     "nixpkgs": {

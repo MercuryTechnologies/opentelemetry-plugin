@@ -4,7 +4,8 @@
     utils.url = github:numtide/flake-utils;
 
     all-cabal-hashes = {
-      url = "github:commercialhaskell/all-cabal-hashes/hackage";
+      url = "https://api.github.com/repos/commercialhaskell/all-cabal-hashes/tarball/c314b1bfabd37d30d2f315a5a322323ebbd98acb";
+      type = "file";
       flake = false;
     };
   };
