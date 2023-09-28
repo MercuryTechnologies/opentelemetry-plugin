@@ -72,7 +72,8 @@ import qualified Text.Read as Read
     but none of the stock samplers provide a way to sample a subset of
     the `Span`s within a trace.
 
-    This adds a new "sampler
+    This adds a new "spanratio" sampler which can be used to sample subset of
+    module spans.
 -}
 getSampler :: IO (Maybe Sampler)
 getSampler = do
