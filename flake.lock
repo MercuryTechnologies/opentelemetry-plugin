@@ -3,11 +3,11 @@
     "all-cabal-hashes": {
       "flake": false,
       "locked": {
-        "lastModified": 1695875486,
-        "narHash": "sha256-6lMIxBq35IPSRG72w18sVz8yHw8xYusmJv2Sb3DS6v0=",
+        "lastModified": 1695934786,
+        "narHash": "sha256-g38SlwRKWY29/ImD1oO+svzOaCPme1Z7KWR2qmRyaPQ=",
         "owner": "commercialhaskell",
         "repo": "all-cabal-hashes",
-        "rev": "38bf94f1f4a1a791678150696dd0880802d3058b",
+        "rev": "c314b1bfabd37d30d2f315a5a322323ebbd98acb",
         "type": "github"
       },
       "original": {
