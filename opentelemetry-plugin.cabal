@@ -17,10 +17,12 @@ library
     build-depends:    base >=4.15.0.0 && < 5
                     , bytestring
                     , containers
-                    , hs-opentelemetry-api
+                    , hs-opentelemetry-api >= 0.1.0.0
                     , hs-opentelemetry-propagator-w3c
                     , hs-opentelemetry-sdk
+                    , mwc-random
                     , text
+                    , unordered-containers
     other-modules:    OpenTelemetry.Plugin.Shared
                     , Paths_opentelemetry_plugin
     autogen-modules:  Paths_opentelemetry_plugin

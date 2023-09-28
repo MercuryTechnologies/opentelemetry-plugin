@@ -41,7 +41,7 @@ wrapTodo getParentContext todo =
                     Outputable.showSDocOneLine Outputable.defaultSDocContext sdoc
 
             (_, beginPass, endPass) <- do
-                Shared.makeWrapperPluginPasses getParentContext (Text.pack label)
+                Shared.makeWrapperPluginPasses False getParentContext (Text.pack label)
 
             let beginPluginPass =
                     CoreDoPluginPass ("begin " <> label) \modGuts -> liftIO do
@@ -86,7 +86,7 @@ plugin =
         let moduleText = Text.pack (Plugins.moduleNameString moduleName_)
 
         (getCurrentContext, firstPluginPass, lastPluginPass) <- do
-            liftIO (Shared.makeWrapperPluginPasses Shared.getTopLevelContext moduleText)
+            liftIO (Shared.makeWrapperPluginPasses True Shared.getTopLevelContext moduleText)
 
         let firstPass =
                 CoreDoPluginPass "begin module" \modGuts -> liftIO do
