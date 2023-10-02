@@ -188,11 +188,13 @@ makeWrapperPluginPasses sample getParentContext label = liftIO do
 
             passSpan <- Trace.createSpan tracer parentContext label spanArguments
 
-            MVar.putMVar spanMVar passSpan
+            _ <- MVar.tryPutMVar spanMVar passSpan
 
             let currentContext = Context.insertSpan passSpan parentContext
 
-            MVar.putMVar currentContextMVar currentContext
+            _ <- MVar.tryPutMVar currentContextMVar currentContext
+
+            pure ()
 
     let endPass = do
             passSpan <- MVar.readMVar spanMVar
@@ -274,7 +276,9 @@ initializeTopLevelContext = do
 
     let contextWithSpan = Context.insertSpan span context
 
-    MVar.putMVar topLevelContextMVar contextWithSpan
+    _ <- MVar.tryPutMVar topLevelContextMVar contextWithSpan
+
+    return ()
 
 -- | Access the top-level `Context` computed by `initializeTopLevelContext`
 getTopLevelContext :: IO Context
@@ -299,7 +303,9 @@ setRootModuleNames :: [String] -> IO ()
 setRootModuleNames rootModuleNames = do
     let set = Set.fromList (map Text.pack rootModuleNames)
 
-    MVar.putMVar rootModuleNamesMVar set
+    _ <- MVar.tryPutMVar rootModuleNamesMVar set
+
+    pure ()
 
 -- | Check if a module is one of the root modules
 isRootModule :: String -> IO Bool
