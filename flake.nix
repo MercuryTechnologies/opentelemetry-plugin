@@ -41,8 +41,7 @@
                           self.lib.cleanSourceWith
                             { filter = name: type:
                                     self.lib.cleanSourceFilter name type
-                                &&  !(self.lib.hasSuffix ".nix" name)
-                                &&  !(builtins.baseNameOf name == "README.md");
+                                &&  !(self.lib.hasSuffix ".nix" name);
 
                               src = ./.;
                             };

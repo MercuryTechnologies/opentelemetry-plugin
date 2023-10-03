@@ -2,14 +2,14 @@ cabal-version:      3.0
 name:               opentelemetry-plugin
 version:            1.0.0
 synopsis:           GHC plugin for open telemetry
-description:        This package provides a GHC plugin that exports each module's build times to an open telemetry collector.
+description:        This package provides a GHC plugin that exports each module's build times to an open telemetry collector.  See the included `README` below for more details.
 license:            BSD-3-Clause
 license-file:       LICENSE
 author:             Mercury Technologies
 maintainer:         gabriella@mercury.com
 copyright:          2023 Mercury Technologies
 build-type:         Simple
-extra-doc-files:    CHANGELOG.md
+extra-doc-files:    CHANGELOG.md README.md
 
 library
     hs-source-dirs:   src
@@ -17,11 +17,11 @@ library
     build-depends:    base >=4.15.0.0 && < 5
                     , bytestring
                     , containers
-                    , ghc >= 9.2
-                    , hs-opentelemetry-api >= 0.1.0.0
+                    , ghc >= 9.2 && < 9.8
+                    , hs-opentelemetry-api >= 0.1.0.0 && < 0.2
                     , hs-opentelemetry-propagator-w3c
-                    , hs-opentelemetry-sdk
-                    , mwc-random
+                    , hs-opentelemetry-sdk >= 0.0.3.0 && < 0.1
+                    , mwc-random >= 0.13.1.0
                     , text
                     , unordered-containers
     other-modules:    OpenTelemetry.Plugin.Shared
