@@ -87,9 +87,9 @@ getSampler = do
         ratio <- Read.readMaybe ratioString
         pure (spanRatioBased ratio)
 
-{-| Like a lot of other uses of `unsafePerformIO` in this module, we're doing
-    this because the plugin interface doesn't provide a way for us to acquire
-    resources before returning the plugin.
+{-| Like a lot of other uses of `Unsafe.unsafePerformIO` in this module, we're
+    doing this because the plugin interface doesn't provide a way for us to
+    acquire resources before returning the plugin.
 -}
 generator :: GenIO
 generator = Unsafe.unsafePerformIO MWC.createSystemRandom
@@ -120,8 +120,8 @@ spanRatioBased fraction = Sampler
                 shouldSample Sampler.alwaysOn context traceId_ name spanArguments
     }
 
-{-| Note: We don't properly shut this down using `shutdownTracerProvider`, but
-    all that the shutdown does is flush metrics, so instead we flush metrics
+{-| Note: We don't properly shut this down using `Trace.shutdownTracerProvider`,
+    but all that the shutdown does is flush metrics, so instead we flush metrics
     (using `flush`) at the end of compilation to make up for the lack of a
     proper shutdown.
 -}
