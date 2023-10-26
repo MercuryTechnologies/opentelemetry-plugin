@@ -127,7 +127,13 @@ spanRatioBased fraction = Sampler
 -}
 tracerProvider :: TracerProvider
 tracerProvider = Unsafe.unsafePerformIO do
-    (processors, options) <- Trace.getTracerProviderInitializationOptions
+    (processors, options) <-
+        -- This function will collect *all* of the command line arguments
+        -- that were provided to GHC. This results in a huge amount of data
+        -- being sent. For that reason, we blank out the process arguments
+        -- for this section of code.
+        Environment.withArgs [] do
+            Trace.getTracerProviderInitializationOptions
 
     maybeSampler <- getSampler
 
