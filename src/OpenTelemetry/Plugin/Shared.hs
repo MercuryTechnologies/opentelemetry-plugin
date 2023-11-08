@@ -171,7 +171,7 @@ makeWrapperPluginPasses
     :: Bool
       -- ^ Whether to sample a subset of spans
     -> IO Context
-       -- ^ Action to ead the parent span's `Context`
+       -- ^ Action to read the parent span's `Context`
     -> Text
        -- ^ Label for the current span
     -> IO (IO Context, IO (), IO ())
@@ -332,3 +332,16 @@ flush = do
     _ <- Trace.Core.forceFlushTracerProvider tracerProvider Nothing
 
     pure ()
+
+-- | Returns 'True' if the plugin should create spans for module passes in
+-- compilation. Examples would be Simplifier, any other plugin execution,
+-- etc.
+getPluginShouldRecordPasses :: IO Bool
+getPluginShouldRecordPasses = do
+    maybeRecordPasses <- Environment.lookupEnv "OTEL_GHC_PLUGIN_RECORD_PASSES"
+    pure $ fromMaybe False do
+        recordPassess <- maybeRecordPasses
+        asum
+            [ True <$ stripPrefix "t" recordPasses
+            , (> 0) <$> readMaybe recordPasses
+            ]
