@@ -116,7 +116,7 @@ plugin =
 
                     pure modGuts
 
-        shouldMakeSubPasses <- Shared.getPluginShouldRecordPasses
+        shouldMakeSubPasses <- liftIO Shared.getPluginShouldRecordPasses
 
         newTodos <-
             if shouldMakeSubPasses

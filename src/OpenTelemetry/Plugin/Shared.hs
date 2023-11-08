@@ -12,6 +12,7 @@
 module OpenTelemetry.Plugin.Shared
     ( -- * Plugin passes
       makeWrapperPluginPasses
+    , getPluginShouldRecordPasses
 
       -- * Top-level context
     , initializeTopLevelContext
@@ -49,8 +50,10 @@ import OpenTelemetry.Trace
     , TracerProviderOptions(..)
     )
 
+import qualified Control.Monad as Monad
 import qualified Control.Concurrent.MVar as MVar
 import qualified Data.HashMap.Strict as HashMap
+import qualified Data.Maybe as Maybe
 import qualified Data.Set as Set
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as Text.Encoding
@@ -339,9 +342,9 @@ flush = do
 getPluginShouldRecordPasses :: IO Bool
 getPluginShouldRecordPasses = do
     maybeRecordPasses <- Environment.lookupEnv "OTEL_GHC_PLUGIN_RECORD_PASSES"
-    pure $ fromMaybe False do
-        recordPassess <- maybeRecordPasses
-        asum
-            [ True <$ stripPrefix "t" recordPasses
-            , (> 0) <$> readMaybe recordPasses
+    pure $ Maybe.fromMaybe False do
+        recordPasses <- maybeRecordPasses
+        Monad.msum
+            [ True <$ Text.stripPrefix "t" (Text.toLower (Text.strip (Text.pack recordPasses)))
+            , ((0 :: Int) <) <$> Read.readMaybe recordPasses
             ]
