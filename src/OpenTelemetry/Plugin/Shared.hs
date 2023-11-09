@@ -344,7 +344,4 @@ getPluginShouldRecordPasses = do
     maybeRecordPasses <- Environment.lookupEnv "OTEL_GHC_PLUGIN_RECORD_PASSES"
     pure $ Maybe.fromMaybe False do
         recordPasses <- maybeRecordPasses
-        Monad.msum
-            [ True <$ Text.stripPrefix "t" (Text.toLower (Text.strip (Text.pack recordPasses)))
-            , ((0 :: Int) <) <$> Read.readMaybe recordPasses
-            ]
+        pure $ Text.toLower (Text.pack recordPasses) `elem` ["true", "t"]
