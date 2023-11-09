@@ -116,7 +116,12 @@ plugin =
 
                     pure modGuts
 
-        newTodos <- traverse (wrapTodo getCurrentContext) todos
+        shouldMakeSubPasses <- liftIO Shared.getPluginShouldRecordPasses
+
+        newTodos <-
+            if shouldMakeSubPasses
+            then traverse (wrapTodo getCurrentContext) todos
+            else pure todos
 
         pure ([ firstPass ] <> newTodos <> [ lastPass ])
 
