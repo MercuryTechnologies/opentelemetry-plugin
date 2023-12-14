@@ -31,3 +31,16 @@ library
     autogen-modules:  Paths_opentelemetry_plugin
     default-language: Haskell2010
     ghc-options:      -Wall
+
+test-suite tests
+    type:           exitcode-stdio-1.0
+    ghc-options:
+      -Wall -threaded -rtsopts 
+      -fplugin OpenTelemetry.Plugin -plugin-package opentelemetry-plugin
+  
+    build-depends:
+        base
+  
+    hs-source-dirs: test
+    main-is:        Main.hs
+  

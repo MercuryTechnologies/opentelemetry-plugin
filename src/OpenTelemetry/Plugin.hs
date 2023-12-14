@@ -96,14 +96,21 @@ plugin =
                             case phase of
                                 T_Hsc _ modSummary -> do
                                     let modName = Plugins.moduleNameString $ Plugins.moduleName $ Plugins.ms_mod modSummary
+                                        modObjectLocation = Plugins.ml_obj_file $ Plugins.ms_location modSummary
                                     -- create span for module name
                                     context <- Shared.getTopLevelContext
                                     span_ <- Trace.createSpan Shared.tracer context (Text.pack modName) Trace.defaultSpanArguments
-                                    STM.atomically $ StmMap.insert span_ modName spanMap
+                                    print ("modObjectLocation: ", modObjectLocation)
+                                    STM.atomically $ StmMap.insert span_ modObjectLocation spanMap
                                     runPhase phase
-                                T_MergeForeign _pipeEnv _hscEnv _filePath _filePaths -> do
-                                    print _filePath
-                                    print _filePaths
+                                T_MergeForeign _pipeEnv _hscEnv filePath _filePaths -> do
+                                    -- the filepath here points to a .dyn_o
+                                    -- object. which. fortunately. has the
+                                    -- name of the module infixed! just
+                                    -- need to take the
+                                    print ("MergeForeign filepath: ", filePath)
+                                    mspan <- STM.atomically $ StmMap.lookup filePath stmMap
+                                    for_ mspan $ \span_ -> Trace.endSpan span_ Nothing
                                     x <- runPhase phase
                                     -- close span for module name
                                     pure x
