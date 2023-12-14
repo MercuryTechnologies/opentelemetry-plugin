@@ -107,8 +107,8 @@ plugin =
                                     -- the filepath here points to a .dyn_o
                                     -- object. we can use this.
                                     -- print ("MergeForeign filepath: ", filePath)
-                                    mspan <- STM.atomically $ StmMap.lookup filePath stmMap
-                                    for_ mspan $ \span_ -> Trace.endSpan span_ Nothing
+                                    mspan <- STM.atomically $ StmMap.lookup filePath spanMap
+                                    Monad.forM_ mspan $ \span_ -> Trace.endSpan span_ Nothing
                                     x <- runPhase phase
                                     -- close span for module name
                                     pure x
