@@ -100,15 +100,13 @@ plugin =
                                     -- create span for module name
                                     context <- Shared.getTopLevelContext
                                     span_ <- Trace.createSpan Shared.tracer context (Text.pack modName) Trace.defaultSpanArguments
-                                    print ("modObjectLocation: ", modObjectLocation)
+                                    -- print ("modObjectLocation: ", modObjectLocation)
                                     STM.atomically $ StmMap.insert span_ modObjectLocation spanMap
                                     runPhase phase
                                 T_MergeForeign _pipeEnv _hscEnv filePath _filePaths -> do
                                     -- the filepath here points to a .dyn_o
-                                    -- object. which. fortunately. has the
-                                    -- name of the module infixed! just
-                                    -- need to take the
-                                    print ("MergeForeign filepath: ", filePath)
+                                    -- object. we can use this.
+                                    -- print ("MergeForeign filepath: ", filePath)
                                     mspan <- STM.atomically $ StmMap.lookup filePath stmMap
                                     for_ mspan $ \span_ -> Trace.endSpan span_ Nothing
                                     x <- runPhase phase
