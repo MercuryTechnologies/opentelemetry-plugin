@@ -1,6 +1,7 @@
 {-# LANGUAGE BlockArguments    #-}
 {-# LANGUAGE NamedFieldPuns    #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE GADTs #-}
 
 {-| This module provides a GHC plugin that will export open telemetry metrics
     for your build.  Specifically, this plugin will create one span per module
@@ -15,7 +16,13 @@ module OpenTelemetry.Plugin
 import Control.Monad.IO.Class (MonadIO(..))
 import GHC.Types.Target (Target(..), TargetId(..))
 import OpenTelemetry.Context (Context)
+import GHC.Driver.Pipeline (runPhase)
 
+import GHC.Driver.Pipeline.Phases
+  ( PhaseHook (..),
+    TPhase (..),
+  )
+import GHC.Driver.Hooks (Hooks (..))
 import GHC.Plugins
     ( CoreToDo(..)
     , GenModule(..)
@@ -27,6 +34,9 @@ import qualified Data.Text as Text
 import qualified GHC.Plugins as Plugins
 import qualified GHC.Utils.Outputable as Outputable
 import qualified OpenTelemetry.Plugin.Shared as Shared
+import qualified StmContainers.Map as StmMap
+import qualified OpenTelemetry.Trace as Trace
+import qualified Control.Concurrent.STM as STM
 
 wrapTodo :: MonadIO io => IO Context -> CoreToDo -> io CoreToDo
 wrapTodo getParentContext todo =
@@ -76,7 +86,33 @@ plugin =
 
         Shared.initializeTopLevelContext
 
+        spanMap <- StmMap.newIO :: IO (StmMap.Map String Trace.Span)
+
         pure hscEnv
+            { hsc_hooks =
+                (hsc_hooks hscEnv)
+                    { runPhaseHook =
+                        Just $ PhaseHook \phase -> do
+                            case phase of
+                                T_Hsc _ modSummary -> do
+                                    let modName = Plugins.moduleNameString $ Plugins.moduleName $ Plugins.ms_mod modSummary
+                                    -- create span for module name
+                                    context <- Shared.getTopLevelContext
+                                    span_ <- Trace.createSpan Shared.tracer context (Text.pack modName) Trace.defaultSpanArguments
+                                    STM.atomically $ StmMap.insert span_ modName spanMap
+                                    runPhase phase
+                                T_MergeForeign _pipeEnv _hscEnv _filePath _filePaths -> do
+                                    print _filePath
+                                    print _filePaths
+                                    x <- runPhase phase
+                                    -- close span for module name
+                                    pure x
+
+                                _ ->
+                                    runPhase phase
+                    }
+
+            }
 
     installCoreToDos _ todos = do
         module_ <- Plugins.getModule

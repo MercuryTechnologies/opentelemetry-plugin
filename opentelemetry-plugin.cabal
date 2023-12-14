@@ -22,6 +22,8 @@ library
                     , hs-opentelemetry-propagator-w3c
                     , hs-opentelemetry-sdk >= 0.0.3.0 && < 0.1
                     , mwc-random >= 0.13.1.0
+                    , stm
+                    , stm-containers
                     , text
                     , unordered-containers
     other-modules:    OpenTelemetry.Plugin.Shared

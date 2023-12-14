@@ -25,6 +25,7 @@ module OpenTelemetry.Plugin.Shared
     , flush
 
     , getSampler
+    , tracer
     ) where
 
 import Control.Concurrent.MVar (MVar)
