@@ -96,7 +96,12 @@ plugin =
                         Just $ PhaseHook \phase -> do
                             case phase of
                                 T_Hsc _ modSummary -> do
-                                    Shared.recordModuleStart modSummary
+                                    let modName =
+                                            Plugins.moduleNameString . Plugins.moduleName . Plugins.ms_mod $
+                                                modSummary
+                                        modObjectLocation =
+                                            Plugins.ml_obj_file $ Plugins.ms_location modSummary
+                                    Shared.recordModuleStart modObjectLocation modName
                                     runPhase phase
                                 T_MergeForeign _pipeEnv _hscEnv objectFilePath _filePaths -> do
                                     -- this phase appears to only be run
@@ -114,7 +119,7 @@ plugin =
                                     x <- runPhase phase
                                     case closePhase of
                                         CloseInHscBackend ->
-                                            Shared.recordModuleEndFromModuleName modName
+                                            Shared.recordModuleEndFromModuleName (Plugins.moduleNameString modName)
                                         _ ->
                                             pure ()
                                     pure x
@@ -132,8 +137,10 @@ plugin =
                 module_ <- Plugins.getModule
 
                 (getCurrentContext, firstPluginPass, lastPluginPass) <- do
-                    let getContext =
-                            Shared.modifyContextWithParentSpan module_ Shared.getTopLevelContext
+                    let moduleNameString =
+                            Plugins.moduleNameString $ Plugins.moduleName module_
+                        getContext =
+                            Shared.modifyContextWithParentSpan moduleNameString Shared.getTopLevelContext
                     liftIO (Shared.makeWrapperPluginPasses True getContext "CoreToDos")
 
                 let firstPass =

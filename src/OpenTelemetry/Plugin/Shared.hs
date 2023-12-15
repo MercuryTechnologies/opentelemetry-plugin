@@ -9,6 +9,9 @@
     under the hood to work within the confines of the plugin API.  That means
     that you should take care to use the utilities in this module correctly
     in order to avoid the plugin hanging.
+
+    This module is intended to be shared by multiple GHC versions. Please
+    don't depend on any GHC internal modules.
 -}
 module OpenTelemetry.Plugin.Shared
     ( -- * Plugin passes
@@ -30,8 +33,6 @@ module OpenTelemetry.Plugin.Shared
 
     , getSampler
     , tracer
-
-    , getModuleNameFromSummary
 
     -- * Recording spans in 'runPhaseHook'
     , SpanMap
@@ -85,7 +86,6 @@ import qualified System.Environment as Environment
 import qualified System.IO.Unsafe as Unsafe
 import qualified System.Random.MWC as MWC
 import qualified Text.Read as Read
-import qualified GHC.Plugins as Plugins
 import qualified Control.Concurrent.STM as STM
 
 {-| Very large Haskell builds can generate an enormous number of spans,
@@ -420,18 +420,17 @@ data ModuleSpan = ModuleSpan
 newSpanMap :: IO SpanMap
 newSpanMap = MkSpanMap <$> StmMap.newIO <*> StmMap.newIO
 
-getModuleNameFromSummary :: Plugins.ModSummary -> String
-getModuleNameFromSummary =
-    Plugins.moduleNameString . Plugins.moduleName . Plugins.ms_mod
-
 -- | Create a 'Span' for the given 'ModSummary' and record it in the
 -- 'SpanMap'.
-recordModuleStart :: Plugins.ModSummary -> IO ()
-recordModuleStart modSummary = do
-    let modName =
-            getModuleNameFromSummary modSummary
-        modObjectLocation =
-            Plugins.ml_obj_file $ Plugins.ms_location modSummary
+recordModuleStart
+    :: FilePath
+    -- ^ The location of the object file for the module. This should be
+    -- available through the 'ModSummary' via 'ms_location' and
+    -- 'ml_obj_file'
+    -> String
+    -- ^ A string representing the name of the module.
+    -> IO ()
+recordModuleStart modObjectLocation modName = do
     spanMap <- MVar.readMVar topLevelSpanMapMVar
     context <- getTopLevelContext
     span_ <- Trace.createSpan tracer context (Text.pack modName) Trace.defaultSpanArguments
@@ -447,7 +446,7 @@ recordModuleStart modSummary = do
 -- a 'Trace.Context', this function modifies the 'Trace.Context' to have
 -- the parent span of the module.
 modifyContextWithParentSpan
-    :: Plugins.Module
+    :: String
     -> IO Context.Context
     -> IO Context.Context
 modifyContextWithParentSpan module_ getContext = do
@@ -458,11 +457,11 @@ modifyContextWithParentSpan module_ getContext = do
 
 -- | Retrieve the 'Trace.Span' for a given 'Plugins.Module', if one has
 -- been recorded.
-getSpanForModule :: Plugins.Module -> IO (Maybe Span)
-getSpanForModule module_ = do
+getSpanForModule :: String -> IO (Maybe Span)
+getSpanForModule moduleNameString = do
     spanMap <- MVar.readMVar topLevelSpanMapMVar
     STM.atomically $ runMaybeT $ do
-        objectFile <- MaybeT $ StmMap.lookup (Plugins.moduleNameString $ Plugins.moduleName module_) $ moduleNameToObjectFile spanMap
+        objectFile <- MaybeT $ StmMap.lookup moduleNameString $ moduleNameToObjectFile spanMap
         fmap moduleSpanSpan $ MaybeT $ StmMap.lookup objectFile (objectFileToModuleSpan spanMap)
 
 -- | Close the span for the module associated with the given object file
@@ -506,10 +505,9 @@ recordModuleEndFromObjectFilepath objectFilePath = do
 --
 -- The entry is deleted out of the 'SpanMap' after this operation.
 recordModuleEndFromModuleName
-    :: Plugins.ModuleName
+    :: String
     -> IO ()
-recordModuleEndFromModuleName modName = do
-    let moduleNameString = Plugins.moduleNameString modName
+recordModuleEndFromModuleName moduleNameString = do
     spanMap <- MVar.readMVar topLevelSpanMapMVar
     mspan <- Monad.join <$> STM.atomically do
         mobjectFile <- StmMap.lookup moduleNameString (moduleNameToObjectFile spanMap)
