@@ -153,6 +153,7 @@ tphase2Text p =
     T_LlvmLlc {} -> "T_LlvmLlc"
     T_LlvmMangle {} -> "T_LlvmMangle"
     T_MergeForeign {} -> "T_MergeForeign"
+    _ -> "Unknown Phase"
 
 -- return an ident of some sort for the phase
 envFromTPhase :: TPhase res -> Maybe String
@@ -168,9 +169,10 @@ envFromTPhase p =
     T_HscBackend _ _ mname _ _ _ -> Just (Plugins.moduleNameString mname)
     T_CmmCpp _ _ outputFilepath -> Just outputFilepath
     T_Cmm _ _ outputFilepath -> Just outputFilepath
-    T_Cc _ _ _ outputFilepath -> Just outputFilepath
+    T_Cc _ _ _ _ outputFilepath -> Just outputFilepath
     T_As _ _ _ _ _ -> (Nothing)
     T_LlvmOpt _ _ _ -> (Nothing)
     T_LlvmLlc _ _ _ -> (Nothing)
     T_LlvmMangle _ _ _ -> (Nothing)
     T_MergeForeign _ _ objectFilePath _ -> Just objectFilePath
+    _ -> Nothing
