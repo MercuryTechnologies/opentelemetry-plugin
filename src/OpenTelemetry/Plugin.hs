@@ -16,8 +16,8 @@ module OpenTelemetry.Plugin
 import Control.Monad.IO.Class (MonadIO(..))
 import GHC.Types.Target (Target(..), TargetId(..))
 import OpenTelemetry.Context (Context)
-import GHC.Driver.Pipeline (runPhase)
 
+import GHC.Driver.Pipeline (runPhase)
 import GHC.Driver.Pipeline.Phases
   ( PhaseHook (..),
     TPhase (..),
