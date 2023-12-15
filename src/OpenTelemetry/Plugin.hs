@@ -25,7 +25,6 @@ import GHC.Driver.Pipeline.Phases
 import GHC.Driver.Hooks (Hooks (..))
 import GHC.Plugins
     ( CoreToDo(..)
-    , GenModule(..)
     , HscEnv(..)
     , Plugin(..)
     )
@@ -61,7 +60,7 @@ wrapTodo getParentContext todo =
 
                         pure modGuts
 
-            pure (CoreDoPasses [beginPluginPass, todo, endPluginPass ])
+            pure (CoreDoPasses [ beginPluginPass, todo, endPluginPass ])
 
 -- | GHC plugin that exports open telemetry metrics about the build
 plugin :: Plugin
@@ -107,14 +106,10 @@ plugin =
             then do
                 module_ <- Plugins.getModule
 
-                let moduleName_ = moduleName module_
-
-                let moduleText = Text.pack (Plugins.moduleNameString moduleName_)
-
                 (getCurrentContext, firstPluginPass, lastPluginPass) <- do
                     let getContext =
                             Shared.modifyContextWithParentSpan module_ Shared.getTopLevelContext
-                    liftIO (Shared.makeWrapperPluginPasses True getContext moduleText)
+                    liftIO (Shared.makeWrapperPluginPasses True getContext "CoreToDos")
 
                 let firstPass =
                         CoreDoPluginPass "begin module" \modGuts -> liftIO do
