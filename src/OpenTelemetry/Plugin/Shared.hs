@@ -432,7 +432,6 @@ recordModuleStart modSummary = do
             getModuleNameFromSummary modSummary
         modObjectLocation =
             Plugins.ml_obj_file $ Plugins.ms_location modSummary
-    putStrLn ("recordModuleStart: \t" <> modName)
     spanMap <- MVar.readMVar topLevelSpanMapMVar
     context <- getTopLevelContext
     span_ <- Trace.createSpan tracer context (Text.pack modName) Trace.defaultSpanArguments
@@ -487,7 +486,6 @@ recordModuleEndFromObjectFilepath
     -- @
     -> IO ()
 recordModuleEndFromObjectFilepath objectFilePath = do
-    putStrLn $ "recordModuleEnd: \t" <> objectFilePath
     spanMap <- MVar.readMVar topLevelSpanMapMVar
     mspan <- STM.atomically do
         let objectFileMap = objectFileToModuleSpan spanMap
@@ -499,11 +497,10 @@ recordModuleEndFromObjectFilepath objectFilePath = do
 
     case mspan of
         Just ModuleSpan {..} -> do
-            putStrLn $ "ending span: \t" <> moduleSpanName
             Trace.endSpan moduleSpanSpan Nothing
             flushMetricsWhenRootModule moduleSpanName
         Nothing -> do
-            putStrLn $ "no module found for: " <> objectFilePath
+            pure ()
 
 -- | Close the span for the module name.
 --
@@ -513,7 +510,6 @@ recordModuleEndFromModuleName
     -> IO ()
 recordModuleEndFromModuleName modName = do
     let moduleNameString = Plugins.moduleNameString modName
-    putStrLn $ "recordModuleEndFromModuleName: \t" <> show modName
     spanMap <- MVar.readMVar topLevelSpanMapMVar
     mspan <- Monad.join <$> STM.atomically do
         mobjectFile <- StmMap.lookup moduleNameString (moduleNameToObjectFile spanMap)
@@ -526,6 +522,5 @@ recordModuleEndFromModuleName modName = do
             pure mspan
 
     Monad.forM_ mspan \ModuleSpan{..} -> do
-        putStrLn $ "ending span: \t" <> moduleSpanName
         Trace.endSpan moduleSpanSpan Nothing
         flushMetricsWhenRootModule moduleSpanName
