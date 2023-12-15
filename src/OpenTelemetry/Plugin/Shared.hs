@@ -421,11 +421,12 @@ newSpanMap = MkSpanMap <$> StmMap.newIO <*> StmMap.newIO
 -- 'SpanMap'.
 recordModuleStart :: Plugins.ModSummary -> IO ()
 recordModuleStart modSummary = do
-    spanMap <- MVar.readMVar topLevelSpanMapMVar
     let modName =
             Plugins.moduleNameString $ Plugins.moduleName $ Plugins.ms_mod modSummary
         modObjectLocation =
             Plugins.ml_obj_file $ Plugins.ms_location modSummary
+    putStrLn ("recordModuleStart: \t" <> modName)
+    spanMap <- MVar.readMVar topLevelSpanMapMVar
     context <- getTopLevelContext
     span_ <- Trace.createSpan tracer context (Text.pack modName) Trace.defaultSpanArguments
     let moduleSpan = ModuleSpan
@@ -479,6 +480,7 @@ recordModuleEnd
     -- @
     -> IO ()
 recordModuleEnd objectFilePath = do
+    putStrLn $ "recordModuleEnd: \t" <> objectFilePath
     spanMap <- MVar.readMVar topLevelSpanMapMVar
     mspan <- STM.atomically do
         let objectFileMap = objectFileToModuleSpan spanMap
@@ -487,6 +489,11 @@ recordModuleEnd objectFilePath = do
         Monad.forM_ mspan \moduleSpan -> do
             StmMap.delete (moduleSpanName moduleSpan) (moduleNameToObjectFile spanMap)
         pure mspan
-    Monad.forM_ mspan $ \ ModuleSpan {..} -> do
-        Trace.endSpan moduleSpanSpan Nothing
-        flushMetricsWhenRootModule moduleSpanName
+
+    case mspan of
+        Just ModuleSpan {..} -> do
+            putStrLn $ "ending span: \t" <> moduleSpanName
+            Trace.endSpan moduleSpanSpan Nothing
+            flushMetricsWhenRootModule moduleSpanName
+        Nothing -> do
+            putStrLn $ "no module found for: " <> objectFilePath
