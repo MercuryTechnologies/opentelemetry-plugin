@@ -25,6 +25,7 @@ library
                     , stm
                     , stm-containers
                     , text
+                    , transformers
                     , unordered-containers
     other-modules:    OpenTelemetry.Plugin.Shared
                     , Paths_opentelemetry_plugin

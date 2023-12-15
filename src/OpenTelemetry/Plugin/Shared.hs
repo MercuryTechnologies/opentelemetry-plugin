@@ -18,6 +18,7 @@ module OpenTelemetry.Plugin.Shared
       -- * Top-level context
     , initializeTopLevelContext
     , getTopLevelContext
+    , modifyContextWithParentSpan
 
       -- * Root module names
     , setRootModuleNames
@@ -47,6 +48,8 @@ import OpenTelemetry.Trace.Sampler (Sampler(..), SamplingResult(..))
 import Prelude hiding (span)
 import System.Random.MWC (GenIO)
 import qualified StmContainers.Map as StmMap
+import Control.Monad.Trans.Maybe (MaybeT(..))
+import Data.IORef
 
 import OpenTelemetry.Trace
     ( Attribute(..)
@@ -233,6 +236,14 @@ topLevelContextMVar :: MVar Context
 topLevelContextMVar = Unsafe.unsafePerformIO MVar.newEmptyMVar
 {-# NOINLINE topLevelContextMVar #-}
 
+{- | We keep track of the module spans in this top-level 'IORef' so that it
+     may be shared between the driverPlugin and other plugins.
+
+-}
+topLevelSpanMapRef :: IORef SpanMap
+topLevelSpanMapRef = Unsafe.unsafePerformIO $ newIORef =<< newSpanMap
+{-# NOINLINE topLevelSpanMapRef #-}
+
 getTopLevelSpan :: IO Span
 getTopLevelSpan = do
     traceParent <- lookupEnv "TRACEPARENT"
@@ -298,6 +309,10 @@ initializeTopLevelContext = do
     let contextWithSpan = Context.insertSpan span context
 
     _ <- MVar.tryPutMVar topLevelContextMVar contextWithSpan
+
+    --  We don't need to do anything with it yet, but we do want to
+    --  initialize it.
+    _ <- readIORef topLevelSpanMapRef
 
     return ()
 
@@ -389,7 +404,10 @@ flushMetricsWhenRootModule modName = do
 -- information is present both at the beginning and end, we can use that to
 -- associate a 'Trace.Span' with a module's beginning and end, to record
 -- the full time in compilation.
-newtype SpanMap = MkSpanMap { unSpanMap :: StmMap.Map String ModuleSpan }
+data SpanMap = MkSpanMap
+    { objectFileToModuleSpan :: StmMap.Map FilePath ModuleSpan
+    , moduleNameToObjectFile :: StmMap.Map String FilePath
+    }
 
 -- | A datatype containing the name of a module and the associated
 -- 'Trace.Span'.
@@ -400,12 +418,13 @@ data ModuleSpan = ModuleSpan
 
 -- | Create a new empty 'SpanMap'.
 newSpanMap :: IO SpanMap
-newSpanMap = MkSpanMap <$> StmMap.newIO
+newSpanMap = MkSpanMap <$> StmMap.newIO <*> StmMap.newIO
 
 -- | Create a 'Span' for the given 'ModSummary' and record it in the
 -- 'SpanMap'.
-recordModuleStart :: Plugins.ModSummary -> SpanMap -> IO ()
-recordModuleStart modSummary spanMap = do
+recordModuleStart :: Plugins.ModSummary -> IO ()
+recordModuleStart modSummary = do
+    spanMap <- readIORef topLevelSpanMapRef
     let modName =
             Plugins.moduleNameString $ Plugins.moduleName $ Plugins.ms_mod modSummary
         modObjectLocation =
@@ -416,7 +435,31 @@ recordModuleStart modSummary spanMap = do
             { moduleSpanName = modName
             , moduleSpanSpan = span_
             }
-    STM.atomically $ StmMap.insert moduleSpan modObjectLocation (unSpanMap spanMap)
+    STM.atomically do
+        StmMap.insert moduleSpan modObjectLocation (objectFileToModuleSpan spanMap)
+        StmMap.insert modObjectLocation modName (moduleNameToObjectFile spanMap)
+
+-- | Given a 'Plugins.Module' and a function that provides
+-- a 'Trace.Context', this function modifies the 'Trace.Context' to have
+-- the parent span of the module.
+modifyContextWithParentSpan
+    :: Plugins.Module
+    -> IO Context.Context
+    -> IO Context.Context
+modifyContextWithParentSpan module_ getContext = do
+    mspan <- getSpanForModule module_
+    let insertSpan context =
+            maybe context (`Context.insertSpan` context) mspan
+    fmap insertSpan getContext
+
+-- | Retrieve the 'Trace.Span' for a given 'Plugins.Module', if one has
+-- been recorded.
+getSpanForModule :: Plugins.Module -> IO (Maybe Span)
+getSpanForModule module_ = do
+    spanMap <- readIORef topLevelSpanMapRef
+    STM.atomically $ runMaybeT $ do
+        objectFile <- MaybeT $ StmMap.lookup (Plugins.moduleNameString $ Plugins.moduleName module_) $ moduleNameToObjectFile spanMap
+        fmap moduleSpanSpan $ MaybeT $ StmMap.lookup objectFile (objectFileToModuleSpan spanMap)
 
 -- | Close the span for the module associated with the given object file
 -- path.
@@ -424,6 +467,8 @@ recordModuleStart modSummary spanMap = do
 -- The 'FilePath' should come from the 'T_MergeForeign' constructor
 -- - this represents the destination filepath for the object file of the
 -- module.
+--
+-- The entry is deleted out of the 'SpanMap' after this operation.
 recordModuleEnd
     :: FilePath
     -- ^ This should come from the 'T_MergeForeign' constructor, as:
@@ -435,11 +480,16 @@ recordModuleEnd
     --      _ ->
     --          pure ()
     -- @
-    -> SpanMap
     -> IO ()
-recordModuleEnd objectFilePath spanMap = do
-    mspan <- STM.atomically $ StmMap.lookup objectFilePath (unSpanMap spanMap)
+recordModuleEnd objectFilePath = do
+    spanMap <- readIORef topLevelSpanMapRef
+    mspan <- STM.atomically do
+        let objectFileMap = objectFileToModuleSpan spanMap
+        mspan <- StmMap.lookup objectFilePath objectFileMap
+        StmMap.delete objectFilePath objectFileMap
+        Monad.forM_ mspan \moduleSpan -> do
+            StmMap.delete (moduleSpanName moduleSpan) (moduleNameToObjectFile spanMap)
+        pure mspan
     Monad.forM_ mspan $ \ ModuleSpan {..} -> do
         Trace.endSpan moduleSpanSpan Nothing
         flushMetricsWhenRootModule moduleSpanName
-

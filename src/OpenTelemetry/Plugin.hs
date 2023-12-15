@@ -82,8 +82,6 @@ plugin =
 
         Shared.initializeTopLevelContext
 
-        spanMap <- Shared.newSpanMap
-
         pure hscEnv
             { hsc_hooks =
                 (hsc_hooks hscEnv)
@@ -91,17 +89,15 @@ plugin =
                         Just $ PhaseHook \phase -> do
                             case phase of
                                 T_Hsc _ modSummary -> do
-                                    Shared.recordModuleStart modSummary spanMap
+                                    Shared.recordModuleStart modSummary
                                     runPhase phase
                                 T_MergeForeign _pipeEnv _hscEnv objectFilePath _filePaths -> do
                                     x <- runPhase phase
-                                    Shared.recordModuleEnd objectFilePath spanMap
+                                    Shared.recordModuleEnd objectFilePath
                                     pure x
-
                                 _ ->
                                     runPhase phase
                     }
-
             }
 
     installCoreToDos _ todos = do
@@ -116,7 +112,9 @@ plugin =
                 let moduleText = Text.pack (Plugins.moduleNameString moduleName_)
 
                 (getCurrentContext, firstPluginPass, lastPluginPass) <- do
-                    liftIO (Shared.makeWrapperPluginPasses True Shared.getTopLevelContext moduleText)
+                    let getContext =
+                            Shared.modifyContextWithParentSpan module_ Shared.getTopLevelContext
+                    liftIO (Shared.makeWrapperPluginPasses True getContext moduleText)
 
                 let firstPass =
                         CoreDoPluginPass "begin module" \modGuts -> liftIO do
