@@ -196,7 +196,7 @@ makeWrapperPluginPasses sample getParentContext label = liftIO do
                     else
                         Trace.defaultSpanArguments
 
-            passSpan <- Trace.createSpan tracer parentContext label spanArguments
+            passSpan <- Trace.createSpan tracer parentContext ("OG: " <> label) spanArguments
 
             _ <- MVar.tryPutMVar spanMVar passSpan
 

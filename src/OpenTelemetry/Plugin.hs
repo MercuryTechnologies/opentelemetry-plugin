@@ -65,7 +65,7 @@ wrapTodo getParentContext todo =
 
                         pure modGuts
 
-            pure (CoreDoPasses [ beginPluginPass, todo, endPluginPass ])
+            pure (CoreDoPasses [beginPluginPass, todo, endPluginPass ])
 
 -- | GHC plugin that exports open telemetry metrics about the build
 plugin :: Plugin
@@ -107,9 +107,9 @@ plugin =
                                     -- the filepath here points to a .dyn_o
                                     -- object. we can use this.
                                     -- print ("MergeForeign filepath: ", filePath)
+                                    x <- runPhase phase
                                     mspan <- STM.atomically $ StmMap.lookup filePath spanMap
                                     Monad.forM_ mspan $ \span_ -> Trace.endSpan span_ Nothing
-                                    x <- runPhase phase
                                     -- close span for module name
                                     pure x
 
