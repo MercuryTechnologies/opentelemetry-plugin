@@ -31,13 +31,14 @@ module OpenTelemetry.Plugin.Shared
     , getSampler
     , tracer
 
-    , getModuleName
+    , getModuleNameFromSummary
 
     -- * Recording spans in 'runPhaseHook'
     , SpanMap
     , newSpanMap
     , recordModuleStart
-    , recordModuleEnd
+    , recordModuleEndFromObjectFilepath
+    , recordModuleEndFromModuleName
     ) where
 
 import Control.Concurrent.MVar (MVar)
@@ -419,8 +420,8 @@ data ModuleSpan = ModuleSpan
 newSpanMap :: IO SpanMap
 newSpanMap = MkSpanMap <$> StmMap.newIO <*> StmMap.newIO
 
-getModuleName :: Plugins.ModSummary -> String
-getModuleName =
+getModuleNameFromSummary :: Plugins.ModSummary -> String
+getModuleNameFromSummary =
     Plugins.moduleNameString . Plugins.moduleName . Plugins.ms_mod
 
 -- | Create a 'Span' for the given 'ModSummary' and record it in the
@@ -428,7 +429,7 @@ getModuleName =
 recordModuleStart :: Plugins.ModSummary -> IO ()
 recordModuleStart modSummary = do
     let modName =
-            getModuleName modSummary
+            getModuleNameFromSummary modSummary
         modObjectLocation =
             Plugins.ml_obj_file $ Plugins.ms_location modSummary
     putStrLn ("recordModuleStart: \t" <> modName)
@@ -473,7 +474,7 @@ getSpanForModule module_ = do
 -- module.
 --
 -- The entry is deleted out of the 'SpanMap' after this operation.
-recordModuleEnd
+recordModuleEndFromObjectFilepath
     :: FilePath
     -- ^ This should come from the 'T_MergeForeign' constructor, as:
     --
@@ -485,7 +486,7 @@ recordModuleEnd
     --          pure ()
     -- @
     -> IO ()
-recordModuleEnd objectFilePath = do
+recordModuleEndFromObjectFilepath objectFilePath = do
     putStrLn $ "recordModuleEnd: \t" <> objectFilePath
     spanMap <- MVar.readMVar topLevelSpanMapMVar
     mspan <- STM.atomically do
@@ -503,3 +504,28 @@ recordModuleEnd objectFilePath = do
             flushMetricsWhenRootModule moduleSpanName
         Nothing -> do
             putStrLn $ "no module found for: " <> objectFilePath
+
+-- | Close the span for the module name.
+--
+-- The entry is deleted out of the 'SpanMap' after this operation.
+recordModuleEndFromModuleName
+    :: Plugins.ModuleName
+    -> IO ()
+recordModuleEndFromModuleName modName = do
+    let moduleNameString = Plugins.moduleNameString modName
+    putStrLn $ "recordModuleEndFromModuleName: \t" <> show modName
+    spanMap <- MVar.readMVar topLevelSpanMapMVar
+    mspan <- Monad.join <$> STM.atomically do
+        mobjectFile <- StmMap.lookup moduleNameString (moduleNameToObjectFile spanMap)
+        Monad.forM mobjectFile \objectFilePath -> do
+            let objectFileMap = objectFileToModuleSpan spanMap
+            mspan <- StmMap.lookup objectFilePath objectFileMap
+            StmMap.delete objectFilePath objectFileMap
+            Monad.forM_ mspan \moduleSpan -> do
+                StmMap.delete (moduleSpanName moduleSpan) (moduleNameToObjectFile spanMap)
+            pure mspan
+
+    Monad.forM_ mspan \ModuleSpan{..} -> do
+        putStrLn $ "ending span: \t" <> moduleSpanName
+        Trace.endSpan moduleSpanSpan Nothing
+        flushMetricsWhenRootModule moduleSpanName

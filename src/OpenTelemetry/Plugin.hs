@@ -32,6 +32,7 @@ import qualified Data.Text as Text
 import qualified GHC.Plugins as Plugins
 import qualified GHC.Utils.Outputable as Outputable
 import qualified OpenTelemetry.Plugin.Shared as Shared
+import qualified GHC.Driver.Backend as Backend
 
 wrapTodo :: MonadIO io => IO Context -> CoreToDo -> io CoreToDo
 wrapTodo getParentContext todo =
@@ -77,6 +78,13 @@ plugin =
 
                 pure (Plugins.moduleNameString rootModuleName)
 
+        let closePhase =
+                case Backend.backendWritesFiles $ Plugins.backend $ hsc_dflags hscEnv of
+                    False ->
+                        CloseInHscBackend
+                    True ->
+                        CloseInMergeForeign
+
         Shared.setRootModuleNames rootModuleNames
 
         Shared.initializeTopLevelContext
@@ -94,7 +102,21 @@ plugin =
                                     -- this phase appears to only be run
                                     -- during compilation, not ghci
                                     x <- runPhase phase
-                                    Shared.recordModuleEnd objectFilePath
+                                    case closePhase of
+                                        CloseInMergeForeign ->
+                                            Shared.recordModuleEndFromObjectFilepath objectFilePath
+                                        _ ->
+                                            pure ()
+                                    pure x
+                                T_HscBackend _pipeEnv _hscEnv modName _hscSrc _modLoc _hscAction  -> do
+                                    -- this happens in ghci for sure as
+                                    -- a last step
+                                    x <- runPhase phase
+                                    case closePhase of
+                                        CloseInHscBackend ->
+                                            Shared.recordModuleEndFromModuleName modName
+                                        _ ->
+                                            pure ()
                                     pure x
                                 _ -> do
                                     print (tphase2Text phase, envFromTPhase phase)
@@ -134,6 +156,8 @@ plugin =
 
     pluginRecompile = Plugins.purePlugin
 
+data ClosePhase = CloseInHscBackend | CloseInMergeForeign
+
 tphase2Text :: TPhase res -> String
 tphase2Text p =
   case p of
@@ -164,8 +188,8 @@ envFromTPhase p =
     T_Cpp _ _ _ -> Nothing
     T_HsPp _ _ _ _ -> Nothing
     T_HscRecomp _ _ filepath _ -> Just filepath
-    T_Hsc _ modSummary -> Just (Shared.getModuleName modSummary)
-    T_HscPostTc _ modSummary _ _ _ -> Just (Shared.getModuleName modSummary)
+    T_Hsc _ modSummary -> Just (Shared.getModuleNameFromSummary modSummary)
+    T_HscPostTc _ modSummary _ _ _ -> Just (Shared.getModuleNameFromSummary modSummary)
     T_HscBackend _ _ mname _ _ _ -> Just (Plugins.moduleNameString mname)
     T_CmmCpp _ _ outputFilepath -> Just outputFilepath
     T_Cmm _ _ outputFilepath -> Just outputFilepath
