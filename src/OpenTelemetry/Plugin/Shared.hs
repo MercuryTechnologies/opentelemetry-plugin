@@ -31,6 +31,8 @@ module OpenTelemetry.Plugin.Shared
     , getSampler
     , tracer
 
+    , getModuleName
+
     -- * Recording spans in 'runPhaseHook'
     , SpanMap
     , newSpanMap
@@ -417,12 +419,16 @@ data ModuleSpan = ModuleSpan
 newSpanMap :: IO SpanMap
 newSpanMap = MkSpanMap <$> StmMap.newIO <*> StmMap.newIO
 
+getModuleName :: Plugins.ModSummary -> String
+getModuleName =
+    Plugins.moduleNameString . Plugins.moduleName . Plugins.ms_mod
+
 -- | Create a 'Span' for the given 'ModSummary' and record it in the
 -- 'SpanMap'.
 recordModuleStart :: Plugins.ModSummary -> IO ()
 recordModuleStart modSummary = do
     let modName =
-            Plugins.moduleNameString $ Plugins.moduleName $ Plugins.ms_mod modSummary
+            getModuleName modSummary
         modObjectLocation =
             Plugins.ml_obj_file $ Plugins.ms_location modSummary
     putStrLn ("recordModuleStart: \t" <> modName)

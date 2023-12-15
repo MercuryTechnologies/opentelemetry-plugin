@@ -91,10 +91,14 @@ plugin =
                                     Shared.recordModuleStart modSummary
                                     runPhase phase
                                 T_MergeForeign _pipeEnv _hscEnv objectFilePath _filePaths -> do
+                                    -- this phase appears to only be run
+                                    -- during compilation, not ghci
                                     x <- runPhase phase
                                     Shared.recordModuleEnd objectFilePath
                                     pure x
-                                _ ->
+                                _ -> do
+                                    print (tphase2Text phase, envFromTPhase phase)
+
                                     runPhase phase
                     }
             }
@@ -129,3 +133,44 @@ plugin =
                 pure todos
 
     pluginRecompile = Plugins.purePlugin
+
+tphase2Text :: TPhase res -> String
+tphase2Text p =
+  case p of
+    T_Unlit {} -> "T_Unlit"
+    T_FileArgs {} -> "T_FileArgs"
+    T_Cpp {} -> "T_Cpp"
+    T_HsPp {} -> "T_HsPp"
+    T_HscRecomp {} -> "T_HsRecomp"
+    T_Hsc {} -> "T_Hsc"
+    T_HscPostTc {} -> "T_HscPostTc"
+    T_HscBackend {} -> "T_HscBackend"
+    T_CmmCpp {} -> "T_CmmCpp"
+    T_Cmm {} -> "T_Cmm"
+    T_Cc {} -> "T_Cc"
+    T_As {} -> "T_As"
+    T_LlvmOpt {} -> "T_LlvmOpt"
+    T_LlvmLlc {} -> "T_LlvmLlc"
+    T_LlvmMangle {} -> "T_LlvmMangle"
+    T_MergeForeign {} -> "T_MergeForeign"
+
+-- return an ident of some sort for the phase
+envFromTPhase :: TPhase res -> Maybe String
+envFromTPhase p =
+  case p of
+    T_Unlit _ _ _ -> Nothing
+    T_FileArgs _ _ -> Nothing
+    T_Cpp _ _ _ -> Nothing
+    T_HsPp _ _ _ _ -> Nothing
+    T_HscRecomp _ _ filepath _ -> Just filepath
+    T_Hsc _ modSummary -> Just (Shared.getModuleName modSummary)
+    T_HscPostTc _ modSummary _ _ _ -> Just (Shared.getModuleName modSummary)
+    T_HscBackend _ _ mname _ _ _ -> Just (Plugins.moduleNameString mname)
+    T_CmmCpp _ _ outputFilepath -> Just outputFilepath
+    T_Cmm _ _ outputFilepath -> Just outputFilepath
+    T_Cc _ _ _ outputFilepath -> Just outputFilepath
+    T_As _ _ _ _ _ -> (Nothing)
+    T_LlvmOpt _ _ _ -> (Nothing)
+    T_LlvmLlc _ _ _ -> (Nothing)
+    T_LlvmMangle _ _ _ -> (Nothing)
+    T_MergeForeign _ _ objectFilePath _ -> Just objectFilePath
