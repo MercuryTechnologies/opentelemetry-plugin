@@ -49,7 +49,6 @@ import Prelude hiding (span)
 import System.Random.MWC (GenIO)
 import qualified StmContainers.Map as StmMap
 import Control.Monad.Trans.Maybe (MaybeT(..))
-import Data.IORef
 
 import OpenTelemetry.Trace
     ( Attribute(..)
@@ -240,9 +239,9 @@ topLevelContextMVar = Unsafe.unsafePerformIO MVar.newEmptyMVar
      may be shared between the driverPlugin and other plugins.
 
 -}
-topLevelSpanMapRef :: IORef SpanMap
-topLevelSpanMapRef = Unsafe.unsafePerformIO $ newIORef =<< newSpanMap
-{-# NOINLINE topLevelSpanMapRef #-}
+topLevelSpanMapMVar :: MVar SpanMap
+topLevelSpanMapMVar = Unsafe.unsafePerformIO MVar.newEmptyMVar
+{-# NOINLINE topLevelSpanMapMVar #-}
 
 getTopLevelSpan :: IO Span
 getTopLevelSpan = do
@@ -310,9 +309,7 @@ initializeTopLevelContext = do
 
     _ <- MVar.tryPutMVar topLevelContextMVar contextWithSpan
 
-    --  We don't need to do anything with it yet, but we do want to
-    --  initialize it.
-    _ <- readIORef topLevelSpanMapRef
+    _ <- MVar.tryPutMVar topLevelSpanMapMVar =<< newSpanMap
 
     return ()
 
@@ -424,7 +421,7 @@ newSpanMap = MkSpanMap <$> StmMap.newIO <*> StmMap.newIO
 -- 'SpanMap'.
 recordModuleStart :: Plugins.ModSummary -> IO ()
 recordModuleStart modSummary = do
-    spanMap <- readIORef topLevelSpanMapRef
+    spanMap <- MVar.readMVar topLevelSpanMapMVar
     let modName =
             Plugins.moduleNameString $ Plugins.moduleName $ Plugins.ms_mod modSummary
         modObjectLocation =
@@ -456,7 +453,7 @@ modifyContextWithParentSpan module_ getContext = do
 -- been recorded.
 getSpanForModule :: Plugins.Module -> IO (Maybe Span)
 getSpanForModule module_ = do
-    spanMap <- readIORef topLevelSpanMapRef
+    spanMap <- MVar.readMVar topLevelSpanMapMVar
     STM.atomically $ runMaybeT $ do
         objectFile <- MaybeT $ StmMap.lookup (Plugins.moduleNameString $ Plugins.moduleName module_) $ moduleNameToObjectFile spanMap
         fmap moduleSpanSpan $ MaybeT $ StmMap.lookup objectFile (objectFileToModuleSpan spanMap)
@@ -482,7 +479,7 @@ recordModuleEnd
     -- @
     -> IO ()
 recordModuleEnd objectFilePath = do
-    spanMap <- readIORef topLevelSpanMapRef
+    spanMap <- MVar.readMVar topLevelSpanMapMVar
     mspan <- STM.atomically do
         let objectFileMap = objectFileToModuleSpan spanMap
         mspan <- StmMap.lookup objectFilePath objectFileMap
