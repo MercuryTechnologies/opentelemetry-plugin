@@ -1,5 +1,6 @@
 {-# LANGUAGE BlockArguments    #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RecordWildCards #-}
 
 {-| This module provides the GHC-API-agnostic logic for this plugin (mostly
     open telemetry utilities)
@@ -24,9 +25,16 @@ module OpenTelemetry.Plugin.Shared
 
       -- * Flushing
     , flush
+    , flushMetricsWhenRootModule
 
     , getSampler
     , tracer
+
+    -- * Recording spans in 'runPhaseHook'
+    , SpanMap
+    , newSpanMap
+    , recordModuleStart
+    , recordModuleEnd
     ) where
 
 import Control.Concurrent.MVar (MVar)
@@ -38,6 +46,7 @@ import OpenTelemetry.Context (Context)
 import OpenTelemetry.Trace.Sampler (Sampler(..), SamplingResult(..))
 import Prelude hiding (span)
 import System.Random.MWC (GenIO)
+import qualified StmContainers.Map as StmMap
 
 import OpenTelemetry.Trace
     ( Attribute(..)
@@ -71,6 +80,8 @@ import qualified System.Environment as Environment
 import qualified System.IO.Unsafe as Unsafe
 import qualified System.Random.MWC as MWC
 import qualified Text.Read as Read
+import qualified GHC.Plugins as Plugins
+import qualified Control.Concurrent.STM as STM
 
 {-| Very large Haskell builds can generate an enormous number of spans,
     but none of the stock samplers provide a way to sample a subset of
@@ -346,3 +357,89 @@ getPluginShouldRecordPasses = do
     pure $ Maybe.fromMaybe False do
         recordPasses <- maybeRecordPasses
         pure $ Text.toLower (Text.pack recordPasses) `elem` ["true", "t"]
+
+
+-- | Flush metrics if we're compiling one of the root modules.  This is to
+-- work around the fact that we don't have a proper way to finalize the
+-- `TracerProvider` (since the finalizer would normally be responsible for
+-- flushing any last metrics).
+--
+-- You might wonder: why don't we end the top-level span here?  Well, we
+-- don't know which one of the root modules will be the last one to be
+-- compiled.  However, flushing once per root module is still fine because
+-- flushing is safe to run at any time and in practice there will only be
+-- a few root modules.
+flushMetricsWhenRootModule :: String -> IO ()
+flushMetricsWhenRootModule modName = do
+    isRoot <- isRootModule modName
+    Monad.when isRoot flush
+
+-- | A concurrently accessible map that can be used to connect a module at
+-- beginning of compilation and at the end.
+--
+-- GHC records the phases of computation in a datatype 'TPhase'. This
+-- datatype begins Haskell compilation with the 'T_Hsc' phase. The final
+-- phase in compilation is 'T_MergeForeign'. The final phase has a few
+-- items: a 'PipeEnv', an 'HscEnv', a 'Filepath' representing the location
+-- of the object file for the module, and a list of 'Filepath' that I don't
+-- know the purpose of.
+--
+-- 'T_Hsc' phase carries a 'ModSummary' type, which fortunately includes
+-- a 'ms_location' field which has the 'ml_object_file' field. Since this
+-- information is present both at the beginning and end, we can use that to
+-- associate a 'Trace.Span' with a module's beginning and end, to record
+-- the full time in compilation.
+newtype SpanMap = MkSpanMap { unSpanMap :: StmMap.Map String ModuleSpan }
+
+-- | A datatype containing the name of a module and the associated
+-- 'Trace.Span'.
+data ModuleSpan = ModuleSpan
+    { moduleSpanName :: !String
+    , moduleSpanSpan :: !Trace.Span
+    }
+
+-- | Create a new empty 'SpanMap'.
+newSpanMap :: IO SpanMap
+newSpanMap = MkSpanMap <$> StmMap.newIO
+
+-- | Create a 'Span' for the given 'ModSummary' and record it in the
+-- 'SpanMap'.
+recordModuleStart :: Plugins.ModSummary -> SpanMap -> IO ()
+recordModuleStart modSummary spanMap = do
+    let modName =
+            Plugins.moduleNameString $ Plugins.moduleName $ Plugins.ms_mod modSummary
+        modObjectLocation =
+            Plugins.ml_obj_file $ Plugins.ms_location modSummary
+    context <- getTopLevelContext
+    span_ <- Trace.createSpan tracer context (Text.pack modName) Trace.defaultSpanArguments
+    let moduleSpan = ModuleSpan
+            { moduleSpanName = modName
+            , moduleSpanSpan = span_
+            }
+    STM.atomically $ StmMap.insert moduleSpan modObjectLocation (unSpanMap spanMap)
+
+-- | Close the span for the module associated with the given object file
+-- path.
+--
+-- The 'FilePath' should come from the 'T_MergeForeign' constructor
+-- - this represents the destination filepath for the object file of the
+-- module.
+recordModuleEnd
+    :: FilePath
+    -- ^ This should come from the 'T_MergeForeign' constructor, as:
+    --
+    -- @
+    -- case phase of
+    --     'T_MergeForeign' _pipeEnv _hscEnv objectFilePath _otherFilePaths ->
+    --         recordModuleENd objectFilePath
+    --      _ ->
+    --          pure ()
+    -- @
+    -> SpanMap
+    -> IO ()
+recordModuleEnd objectFilePath spanMap = do
+    mspan <- STM.atomically $ StmMap.lookup objectFilePath (unSpanMap spanMap)
+    Monad.forM_ mspan $ \ ModuleSpan {..} -> do
+        Trace.endSpan moduleSpanSpan Nothing
+        flushMetricsWhenRootModule moduleSpanName
+

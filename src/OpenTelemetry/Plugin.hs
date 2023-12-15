@@ -29,14 +29,10 @@ import GHC.Plugins
     , HscEnv(..)
     , Plugin(..)
     )
-import qualified Control.Monad as Monad
 import qualified Data.Text as Text
 import qualified GHC.Plugins as Plugins
 import qualified GHC.Utils.Outputable as Outputable
 import qualified OpenTelemetry.Plugin.Shared as Shared
-import qualified StmContainers.Map as StmMap
-import qualified OpenTelemetry.Trace as Trace
-import qualified Control.Concurrent.STM as STM
 
 wrapTodo :: MonadIO io => IO Context -> CoreToDo -> io CoreToDo
 wrapTodo getParentContext todo =
@@ -86,7 +82,7 @@ plugin =
 
         Shared.initializeTopLevelContext
 
-        spanMap <- StmMap.newIO :: IO (StmMap.Map String Trace.Span)
+        spanMap <- Shared.newSpanMap
 
         pure hscEnv
             { hsc_hooks =
@@ -95,22 +91,11 @@ plugin =
                         Just $ PhaseHook \phase -> do
                             case phase of
                                 T_Hsc _ modSummary -> do
-                                    let modName = Plugins.moduleNameString $ Plugins.moduleName $ Plugins.ms_mod modSummary
-                                        modObjectLocation = Plugins.ml_obj_file $ Plugins.ms_location modSummary
-                                    -- create span for module name
-                                    context <- Shared.getTopLevelContext
-                                    span_ <- Trace.createSpan Shared.tracer context (Text.pack modName) Trace.defaultSpanArguments
-                                    -- print ("modObjectLocation: ", modObjectLocation)
-                                    STM.atomically $ StmMap.insert span_ modObjectLocation spanMap
+                                    Shared.recordModuleStart modSummary spanMap
                                     runPhase phase
-                                T_MergeForeign _pipeEnv _hscEnv filePath _filePaths -> do
-                                    -- the filepath here points to a .dyn_o
-                                    -- object. we can use this.
-                                    -- print ("MergeForeign filepath: ", filePath)
+                                T_MergeForeign _pipeEnv _hscEnv objectFilePath _filePaths -> do
                                     x <- runPhase phase
-                                    mspan <- STM.atomically $ StmMap.lookup filePath spanMap
-                                    Monad.forM_ mspan $ \span_ -> Trace.endSpan span_ Nothing
-                                    -- close span for module name
+                                    Shared.recordModuleEnd objectFilePath spanMap
                                     pure x
 
                                 _ ->
@@ -120,50 +105,34 @@ plugin =
             }
 
     installCoreToDos _ todos = do
-        module_ <- Plugins.getModule
-
-        let moduleName_ = moduleName module_
-
-        let moduleText = Text.pack (Plugins.moduleNameString moduleName_)
-
-        (getCurrentContext, firstPluginPass, lastPluginPass) <- do
-            liftIO (Shared.makeWrapperPluginPasses True Shared.getTopLevelContext moduleText)
-
-        let firstPass =
-                CoreDoPluginPass "begin module" \modGuts -> liftIO do
-                    firstPluginPass
-
-                    pure modGuts
-
-        let lastPass =
-                CoreDoPluginPass "end module" \modGuts -> liftIO do
-                    lastPluginPass
-
-                    isRoot <- Shared.isRootModule (Plugins.moduleNameString moduleName_)
-
-                    -- Flush metrics if we're compiling one of the root
-                    -- modules.  This is to work around the fact that we don't
-                    -- have a proper way to finalize the `TracerProvider`
-                    -- (since the finalizer would normally be responsible for
-                    -- flushing any last metrics).
-                    --
-                    -- You might wonder: why don't we end the top-level span
-                    -- here?  Well, we don't know which one of the root modules
-                    -- will be the last one to be compiled.  However, flushing
-                    -- once per root module is still fine because flushing is
-                    -- safe to run at any time and in practice there will only
-                    -- be a few root modules.
-                    Monad.when isRoot Shared.flush
-
-                    pure modGuts
-
         shouldMakeSubPasses <- liftIO Shared.getPluginShouldRecordPasses
 
-        newTodos <-
-            if shouldMakeSubPasses
-            then traverse (wrapTodo getCurrentContext) todos
-            else pure todos
+        if shouldMakeSubPasses
+            then do
+                module_ <- Plugins.getModule
 
-        pure ([ firstPass ] <> newTodos <> [ lastPass ])
+                let moduleName_ = moduleName module_
+
+                let moduleText = Text.pack (Plugins.moduleNameString moduleName_)
+
+                (getCurrentContext, firstPluginPass, lastPluginPass) <- do
+                    liftIO (Shared.makeWrapperPluginPasses True Shared.getTopLevelContext moduleText)
+
+                let firstPass =
+                        CoreDoPluginPass "begin module" \modGuts -> liftIO do
+                            firstPluginPass
+
+                            pure modGuts
+
+                let lastPass =
+                        CoreDoPluginPass "end module" \modGuts -> liftIO do
+                            lastPluginPass
+
+                            pure modGuts
+
+                newTodos <- traverse (wrapTodo getCurrentContext) todos
+                pure ([ firstPass ] <> newTodos <> [ lastPass ])
+            else do
+                pure todos
 
     pluginRecompile = Plugins.purePlugin
