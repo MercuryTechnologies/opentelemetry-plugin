@@ -1,5 +1,6 @@
 {-# LANGUAGE BlockArguments    #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RecordWildCards #-}
 
 {-| This module provides the GHC-API-agnostic logic for this plugin (mostly
     open telemetry utilities)
@@ -8,6 +9,9 @@
     under the hood to work within the confines of the plugin API.  That means
     that you should take care to use the utilities in this module correctly
     in order to avoid the plugin hanging.
+
+    This module is intended to be shared by multiple GHC versions. Please
+    don't depend on any GHC internal modules.
 -}
 module OpenTelemetry.Plugin.Shared
     ( -- * Plugin passes
@@ -17,6 +21,7 @@ module OpenTelemetry.Plugin.Shared
       -- * Top-level context
     , initializeTopLevelContext
     , getTopLevelContext
+    , modifyContextWithParentSpan
 
       -- * Root module names
     , setRootModuleNames
@@ -24,10 +29,19 @@ module OpenTelemetry.Plugin.Shared
 
       -- * Flushing
     , flush
+    , flushMetricsWhenRootModule
 
     , getSampler
+    , tracer
+
+    -- * Recording spans in 'runPhaseHook'
+    , SpanMap
+    , newSpanMap
+    , recordModuleStart
+    , recordModuleEnd
     ) where
 
+import Control.Applicative ((<|>))
 import Control.Concurrent.MVar (MVar)
 import Control.Monad.IO.Class (liftIO)
 import Data.ByteString (ByteString)
@@ -37,6 +51,7 @@ import OpenTelemetry.Context (Context)
 import OpenTelemetry.Trace.Sampler (Sampler(..), SamplingResult(..))
 import Prelude hiding (span)
 import System.Random.MWC (GenIO)
+import qualified StmContainers.Map as StmMap
 
 import OpenTelemetry.Trace
     ( Attribute(..)
@@ -70,6 +85,7 @@ import qualified System.Environment as Environment
 import qualified System.IO.Unsafe as Unsafe
 import qualified System.Random.MWC as MWC
 import qualified Text.Read as Read
+import qualified Control.Concurrent.STM as STM
 
 {-| Very large Haskell builds can generate an enormous number of spans,
     but none of the stock samplers provide a way to sample a subset of
@@ -221,6 +237,14 @@ topLevelContextMVar :: MVar Context
 topLevelContextMVar = Unsafe.unsafePerformIO MVar.newEmptyMVar
 {-# NOINLINE topLevelContextMVar #-}
 
+{- | We keep track of the module spans in this top-level 'MVar' so that it
+     may be shared between the driverPlugin and other plugins.
+
+-}
+topLevelSpanMapMVar :: MVar SpanMap
+topLevelSpanMapMVar = Unsafe.unsafePerformIO MVar.newEmptyMVar
+{-# NOINLINE topLevelSpanMapMVar #-}
+
 getTopLevelSpan :: IO Span
 getTopLevelSpan = do
     traceParent <- lookupEnv "TRACEPARENT"
@@ -287,6 +311,8 @@ initializeTopLevelContext = do
 
     _ <- MVar.tryPutMVar topLevelContextMVar contextWithSpan
 
+    _ <- MVar.tryPutMVar topLevelSpanMapMVar =<< newSpanMap
+
     return ()
 
 -- | Access the top-level `Context` computed by `initializeTopLevelContext`
@@ -345,3 +371,121 @@ getPluginShouldRecordPasses = do
     pure $ Maybe.fromMaybe False do
         recordPasses <- maybeRecordPasses
         pure $ Text.toLower (Text.pack recordPasses) `elem` ["true", "t"]
+
+
+-- | Flush metrics if we're compiling one of the root modules.  This is to
+-- work around the fact that we don't have a proper way to finalize the
+-- `TracerProvider` (since the finalizer would normally be responsible for
+-- flushing any last metrics).
+--
+-- You might wonder: why don't we end the top-level span here?  Well, we
+-- don't know which one of the root modules will be the last one to be
+-- compiled.  However, flushing once per root module is still fine because
+-- flushing is safe to run at any time and in practice there will only be
+-- a few root modules.
+flushMetricsWhenRootModule :: String -> IO ()
+flushMetricsWhenRootModule modName = do
+    isRoot <- isRootModule modName
+    Monad.when isRoot flush
+
+-- | A concurrently accessible map that can be used to connect a module at
+-- beginning of compilation and at the end.
+--
+-- GHC records the phases of computation in a datatype 'TPhase'. This
+-- datatype begins Haskell compilation with the 'T_Hsc' phase. The final
+-- phase in compilation is 'T_MergeForeign'. The final phase has a few
+-- items: a 'PipeEnv', an 'HscEnv', a 'Filepath' representing the location
+-- of the object file for the module, and a list of 'Filepath' that I don't
+-- know the purpose of.
+--
+-- 'T_Hsc' phase carries a 'ModSummary' type, which fortunately includes
+-- a 'ms_location' field which has the 'ml_object_file' field. Since this
+-- information is present both at the beginning and end, we can use that to
+-- associate a 'Trace.Span' with a module's beginning and end, to record
+-- the full time in compilation.
+data SpanMap = SpanMap
+    { fromObjectFile :: StmMap.Map FilePath SpanRelease
+    , fromModuleName :: StmMap.Map String SpanRelease
+    }
+
+-- | A 'Trace.Span' coupled with the action to delete the 'Span' from the
+-- 'SpanMap'.
+data SpanRelease = SpanRelease
+    { spanReleaseSpan :: Trace.Span
+    , spanReleaseAction :: STM.STM ()
+    , spanReleaseModuleName :: String
+    }
+
+-- | Create a new empty 'SpanMap'.
+newSpanMap :: IO SpanMap
+newSpanMap = SpanMap <$> StmMap.newIO <*> StmMap.newIO
+
+-- | Create a 'Span' for the given 'ModSummary' and record it in the
+-- 'SpanMap'.
+recordModuleStart
+    :: FilePath
+    -- ^ The location of the object file for the module. This should be
+    -- available through the 'ModSummary' via 'ms_location' and
+    -- 'ml_obj_file'
+    -> String
+    -- ^ A string representing the name of the module.
+    -> IO ()
+recordModuleStart modObjectLocation modName = do
+    spanMap <- MVar.readMVar topLevelSpanMapMVar
+    context <- getTopLevelContext
+    span_ <- Trace.createSpan tracer context (Text.pack modName) Trace.defaultSpanArguments
+    let spanRelease =
+            SpanRelease
+                { spanReleaseSpan =
+                    span_
+                , spanReleaseAction = do
+                    StmMap.delete modObjectLocation (fromObjectFile spanMap)
+                    StmMap.delete modName (fromModuleName spanMap)
+                , spanReleaseModuleName =
+                    modName
+                }
+    STM.atomically do
+        StmMap.insert spanRelease modObjectLocation (fromObjectFile spanMap)
+        StmMap.insert spanRelease modName (fromModuleName spanMap)
+
+-- | Given a 'Plugins.Module' and a function that provides
+-- a 'Trace.Context', this function modifies the 'Trace.Context' to have
+-- the parent span of the module.
+modifyContextWithParentSpan
+    :: String
+    -> IO Context.Context
+    -> IO Context.Context
+modifyContextWithParentSpan module_ getContext = do
+    mspan <- getSpanForModule module_
+    let insertSpan context =
+            maybe context (`Context.insertSpan` context) mspan
+    fmap insertSpan getContext
+
+-- | Retrieve the 'Trace.Span' for a given 'Plugins.Module', if one has
+-- been recorded.
+getSpanForModule
+    :: String
+    -> IO (Maybe Span)
+getSpanForModule moduleNameString = do
+    spanMap <- MVar.readMVar topLevelSpanMapMVar
+    STM.atomically do
+        fmap spanReleaseSpan <$> do
+            StmMap.lookup moduleNameString $ fromModuleName spanMap
+
+recordModuleEnd
+    :: String
+    -- ^ This should be either the module name *or* the object file
+    -- location.
+    ->  IO ()
+recordModuleEnd moduleIdentifier = do
+    spanMap <- MVar.readMVar topLevelSpanMapMVar
+    mspan <- STM.atomically do
+        liftA2
+            (<|>)
+            do StmMap.lookup moduleIdentifier (fromObjectFile spanMap)
+            do StmMap.lookup moduleIdentifier (fromModuleName spanMap)
+
+    Monad.forM_ mspan \SpanRelease {..} -> do
+        Trace.endSpan spanReleaseSpan Nothing
+        STM.atomically spanReleaseAction
+        flushMetricsWhenRootModule spanReleaseModuleName

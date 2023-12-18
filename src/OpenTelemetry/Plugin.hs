@@ -1,6 +1,7 @@
 {-# LANGUAGE BlockArguments    #-}
 {-# LANGUAGE NamedFieldPuns    #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE GADTs #-}
 
 {-| This module provides a GHC plugin that will export open telemetry metrics
     for your build.  Specifically, this plugin will create one span per module
@@ -16,17 +17,22 @@ import Control.Monad.IO.Class (MonadIO(..))
 import GHC.Types.Target (Target(..), TargetId(..))
 import OpenTelemetry.Context (Context)
 
+import GHC.Driver.Pipeline (runPhase)
+import GHC.Driver.Pipeline.Phases
+  ( PhaseHook (..),
+    TPhase (..),
+  )
+import GHC.Driver.Hooks (Hooks (..))
 import GHC.Plugins
     ( CoreToDo(..)
-    , GenModule(..)
     , HscEnv(..)
     , Plugin(..)
     )
-import qualified Control.Monad as Monad
 import qualified Data.Text as Text
 import qualified GHC.Plugins as Plugins
 import qualified GHC.Utils.Outputable as Outputable
 import qualified OpenTelemetry.Plugin.Shared as Shared
+import qualified GHC.Driver.Backend as Backend
 
 wrapTodo :: MonadIO io => IO Context -> CoreToDo -> io CoreToDo
 wrapTodo getParentContext todo =
@@ -72,57 +78,88 @@ plugin =
 
                 pure (Plugins.moduleNameString rootModuleName)
 
+        let closePhase =
+                case Backend.backendWritesFiles $ Plugins.backend $ hsc_dflags hscEnv of
+                    False ->
+                        CloseInHscBackend
+                    True ->
+                        CloseInMergeForeign
+
         Shared.setRootModuleNames rootModuleNames
 
         Shared.initializeTopLevelContext
 
         pure hscEnv
+            { hsc_hooks =
+                (hsc_hooks hscEnv)
+                    { runPhaseHook =
+                        Just $ PhaseHook \phase -> do
+                            case phase of
+                                T_Hsc _ modSummary -> do
+                                    let modName =
+                                            Plugins.moduleNameString . Plugins.moduleName . Plugins.ms_mod $
+                                                modSummary
+                                        modObjectLocation =
+                                            Plugins.ml_obj_file $ Plugins.ms_location modSummary
+                                    Shared.recordModuleStart modObjectLocation modName
+                                    runPhase phase
+                                T_MergeForeign _pipeEnv _hscEnv objectFilePath _filePaths -> do
+                                    -- this phase appears to only be run
+                                    -- during compilation, not ghci
+                                    x <- runPhase phase
+                                    case closePhase of
+                                        CloseInMergeForeign ->
+                                            Shared.recordModuleEnd objectFilePath
+                                        _ ->
+                                            pure ()
+                                    pure x
+                                T_HscBackend _pipeEnv _hscEnv modName _hscSrc _modLoc _hscAction  -> do
+                                    -- this happens in ghci for sure as
+                                    -- a last step
+                                    x <- runPhase phase
+                                    case closePhase of
+                                        CloseInHscBackend ->
+                                            Shared.recordModuleEnd (Plugins.moduleNameString modName)
+                                        _ ->
+                                            pure ()
+                                    pure x
+                                _ -> do
+
+                                    runPhase phase
+                    }
+            }
 
     installCoreToDos _ todos = do
-        module_ <- Plugins.getModule
-
-        let moduleName_ = moduleName module_
-
-        let moduleText = Text.pack (Plugins.moduleNameString moduleName_)
-
-        (getCurrentContext, firstPluginPass, lastPluginPass) <- do
-            liftIO (Shared.makeWrapperPluginPasses True Shared.getTopLevelContext moduleText)
-
-        let firstPass =
-                CoreDoPluginPass "begin module" \modGuts -> liftIO do
-                    firstPluginPass
-
-                    pure modGuts
-
-        let lastPass =
-                CoreDoPluginPass "end module" \modGuts -> liftIO do
-                    lastPluginPass
-
-                    isRoot <- Shared.isRootModule (Plugins.moduleNameString moduleName_)
-
-                    -- Flush metrics if we're compiling one of the root
-                    -- modules.  This is to work around the fact that we don't
-                    -- have a proper way to finalize the `TracerProvider`
-                    -- (since the finalizer would normally be responsible for
-                    -- flushing any last metrics).
-                    --
-                    -- You might wonder: why don't we end the top-level span
-                    -- here?  Well, we don't know which one of the root modules
-                    -- will be the last one to be compiled.  However, flushing
-                    -- once per root module is still fine because flushing is
-                    -- safe to run at any time and in practice there will only
-                    -- be a few root modules.
-                    Monad.when isRoot Shared.flush
-
-                    pure modGuts
-
         shouldMakeSubPasses <- liftIO Shared.getPluginShouldRecordPasses
 
-        newTodos <-
-            if shouldMakeSubPasses
-            then traverse (wrapTodo getCurrentContext) todos
-            else pure todos
+        if shouldMakeSubPasses
+            then do
+                module_ <- Plugins.getModule
 
-        pure ([ firstPass ] <> newTodos <> [ lastPass ])
+                (getCurrentContext, firstPluginPass, lastPluginPass) <- do
+                    let moduleNameString =
+                            Plugins.moduleNameString $ Plugins.moduleName module_
+                        getContext =
+                            Shared.modifyContextWithParentSpan moduleNameString Shared.getTopLevelContext
+                    liftIO (Shared.makeWrapperPluginPasses True getContext "CoreToDos")
+
+                let firstPass =
+                        CoreDoPluginPass "begin module" \modGuts -> liftIO do
+                            firstPluginPass
+
+                            pure modGuts
+
+                let lastPass =
+                        CoreDoPluginPass "end module" \modGuts -> liftIO do
+                            lastPluginPass
+
+                            pure modGuts
+
+                newTodos <- traverse (wrapTodo getCurrentContext) todos
+                pure ([ firstPass ] <> newTodos <> [ lastPass ])
+            else do
+                pure todos
 
     pluginRecompile = Plugins.purePlugin
+
+data ClosePhase = CloseInHscBackend | CloseInMergeForeign

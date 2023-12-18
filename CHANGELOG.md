@@ -1,3 +1,12 @@
+# 1.2.0
+
+- The plugin now records much more of the module's compilation. Previously, the
+  span was only recording the `installCoreToDos` phase. With this version, we
+  record starting at the very beginning of compilation (before parsing,
+  TemplateHaskell, etc), and we stop recording at the end of all linking steps.
+- GHC support for < 9.6 was dropped. Further patches should restore this
+  support if desired. 
+
 # 1.1.0
 
 - You can now set `OTEL_GHC_PLUGIN_RECORD_PASSES` to have the plugin report
