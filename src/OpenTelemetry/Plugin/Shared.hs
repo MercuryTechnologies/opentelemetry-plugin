@@ -38,10 +38,10 @@ module OpenTelemetry.Plugin.Shared
     , SpanMap
     , newSpanMap
     , recordModuleStart
-    , recordModuleEndFromObjectFilepath
-    , recordModuleEndFromModuleName
+    , recordModuleEnd
     ) where
 
+import Control.Applicative ((<|>))
 import Control.Concurrent.MVar (MVar)
 import Control.Monad.IO.Class (liftIO)
 import Data.ByteString (ByteString)
@@ -52,7 +52,6 @@ import OpenTelemetry.Trace.Sampler (Sampler(..), SamplingResult(..))
 import Prelude hiding (span)
 import System.Random.MWC (GenIO)
 import qualified StmContainers.Map as StmMap
-import Control.Monad.Trans.Maybe (MaybeT(..))
 
 import OpenTelemetry.Trace
     ( Attribute(..)
@@ -404,21 +403,22 @@ flushMetricsWhenRootModule modName = do
 -- information is present both at the beginning and end, we can use that to
 -- associate a 'Trace.Span' with a module's beginning and end, to record
 -- the full time in compilation.
-data SpanMap = MkSpanMap
-    { objectFileToModuleSpan :: StmMap.Map FilePath ModuleSpan
-    , moduleNameToObjectFile :: StmMap.Map String FilePath
+data SpanMap = SpanMap
+    { fromObjectFile :: StmMap.Map FilePath SpanRelease
+    , fromModuleName :: StmMap.Map String SpanRelease
     }
 
--- | A datatype containing the name of a module and the associated
--- 'Trace.Span'.
-data ModuleSpan = ModuleSpan
-    { moduleSpanName :: !String
-    , moduleSpanSpan :: !Trace.Span
+-- | A 'Trace.Span' coupled with the action to delete the 'Span' from the
+-- 'SpanMap'.
+data SpanRelease = SpanRelease
+    { spanReleaseSpan :: Trace.Span
+    , spanReleaseAction :: STM.STM ()
+    , spanReleaseModuleName :: String
     }
 
 -- | Create a new empty 'SpanMap'.
 newSpanMap :: IO SpanMap
-newSpanMap = MkSpanMap <$> StmMap.newIO <*> StmMap.newIO
+newSpanMap = SpanMap <$> StmMap.newIO <*> StmMap.newIO
 
 -- | Create a 'Span' for the given 'ModSummary' and record it in the
 -- 'SpanMap'.
@@ -434,13 +434,19 @@ recordModuleStart modObjectLocation modName = do
     spanMap <- MVar.readMVar topLevelSpanMapMVar
     context <- getTopLevelContext
     span_ <- Trace.createSpan tracer context (Text.pack modName) Trace.defaultSpanArguments
-    let moduleSpan = ModuleSpan
-            { moduleSpanName = modName
-            , moduleSpanSpan = span_
-            }
+    let spanRelease =
+            SpanRelease
+                { spanReleaseSpan =
+                    span_
+                , spanReleaseAction = do
+                    StmMap.delete modObjectLocation (fromObjectFile spanMap)
+                    StmMap.delete modName (fromModuleName spanMap)
+                , spanReleaseModuleName =
+                    modName
+                }
     STM.atomically do
-        StmMap.insert moduleSpan modObjectLocation (objectFileToModuleSpan spanMap)
-        StmMap.insert modObjectLocation modName (moduleNameToObjectFile spanMap)
+        StmMap.insert spanRelease modObjectLocation (fromObjectFile spanMap)
+        StmMap.insert spanRelease modName (fromModuleName spanMap)
 
 -- | Given a 'Plugins.Module' and a function that provides
 -- a 'Trace.Context', this function modifies the 'Trace.Context' to have
@@ -457,68 +463,29 @@ modifyContextWithParentSpan module_ getContext = do
 
 -- | Retrieve the 'Trace.Span' for a given 'Plugins.Module', if one has
 -- been recorded.
-getSpanForModule :: String -> IO (Maybe Span)
+getSpanForModule
+    :: String
+    -> IO (Maybe Span)
 getSpanForModule moduleNameString = do
     spanMap <- MVar.readMVar topLevelSpanMapMVar
-    STM.atomically $ runMaybeT $ do
-        objectFile <- MaybeT $ StmMap.lookup moduleNameString $ moduleNameToObjectFile spanMap
-        fmap moduleSpanSpan $ MaybeT $ StmMap.lookup objectFile (objectFileToModuleSpan spanMap)
+    STM.atomically do
+        fmap spanReleaseSpan <$> do
+            StmMap.lookup moduleNameString $ fromModuleName spanMap
 
--- | Close the span for the module associated with the given object file
--- path.
---
--- The 'FilePath' should come from the 'T_MergeForeign' constructor
--- - this represents the destination filepath for the object file of the
--- module.
---
--- The entry is deleted out of the 'SpanMap' after this operation.
-recordModuleEndFromObjectFilepath
-    :: FilePath
-    -- ^ This should come from the 'T_MergeForeign' constructor, as:
-    --
-    -- @
-    -- case phase of
-    --     'T_MergeForeign' _pipeEnv _hscEnv objectFilePath _otherFilePaths ->
-    --         recordModuleENd objectFilePath
-    --      _ ->
-    --          pure ()
-    -- @
-    -> IO ()
-recordModuleEndFromObjectFilepath objectFilePath = do
+recordModuleEnd
+    :: String
+    -- ^ This should be either the module name *or* the object file
+    -- location.
+    ->  IO ()
+recordModuleEnd moduleIdentifier = do
     spanMap <- MVar.readMVar topLevelSpanMapMVar
     mspan <- STM.atomically do
-        let objectFileMap = objectFileToModuleSpan spanMap
-        mspan <- StmMap.lookup objectFilePath objectFileMap
-        StmMap.delete objectFilePath objectFileMap
-        Monad.forM_ mspan \moduleSpan -> do
-            StmMap.delete (moduleSpanName moduleSpan) (moduleNameToObjectFile spanMap)
-        pure mspan
+        liftA2
+            (<|>)
+            do StmMap.lookup moduleIdentifier (fromObjectFile spanMap)
+            do StmMap.lookup moduleIdentifier (fromModuleName spanMap)
 
-    case mspan of
-        Just ModuleSpan {..} -> do
-            Trace.endSpan moduleSpanSpan Nothing
-            flushMetricsWhenRootModule moduleSpanName
-        Nothing -> do
-            pure ()
-
--- | Close the span for the module name.
---
--- The entry is deleted out of the 'SpanMap' after this operation.
-recordModuleEndFromModuleName
-    :: String
-    -> IO ()
-recordModuleEndFromModuleName moduleNameString = do
-    spanMap <- MVar.readMVar topLevelSpanMapMVar
-    mspan <- Monad.join <$> STM.atomically do
-        mobjectFile <- StmMap.lookup moduleNameString (moduleNameToObjectFile spanMap)
-        Monad.forM mobjectFile \objectFilePath -> do
-            let objectFileMap = objectFileToModuleSpan spanMap
-            mspan <- StmMap.lookup objectFilePath objectFileMap
-            StmMap.delete objectFilePath objectFileMap
-            Monad.forM_ mspan \moduleSpan -> do
-                StmMap.delete (moduleSpanName moduleSpan) (moduleNameToObjectFile spanMap)
-            pure mspan
-
-    Monad.forM_ mspan \ModuleSpan{..} -> do
-        Trace.endSpan moduleSpanSpan Nothing
-        flushMetricsWhenRootModule moduleSpanName
+    Monad.forM_ mspan \SpanRelease {..} -> do
+        Trace.endSpan spanReleaseSpan Nothing
+        STM.atomically spanReleaseAction
+        flushMetricsWhenRootModule spanReleaseModuleName

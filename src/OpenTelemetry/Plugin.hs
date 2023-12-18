@@ -109,7 +109,7 @@ plugin =
                                     x <- runPhase phase
                                     case closePhase of
                                         CloseInMergeForeign ->
-                                            Shared.recordModuleEndFromObjectFilepath objectFilePath
+                                            Shared.recordModuleEnd objectFilePath
                                         _ ->
                                             pure ()
                                     pure x
@@ -119,7 +119,7 @@ plugin =
                                     x <- runPhase phase
                                     case closePhase of
                                         CloseInHscBackend ->
-                                            Shared.recordModuleEndFromModuleName (Plugins.moduleNameString modName)
+                                            Shared.recordModuleEnd (Plugins.moduleNameString modName)
                                         _ ->
                                             pure ()
                                     pure x
