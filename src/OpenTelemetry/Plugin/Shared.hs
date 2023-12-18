@@ -238,7 +238,7 @@ topLevelContextMVar :: MVar Context
 topLevelContextMVar = Unsafe.unsafePerformIO MVar.newEmptyMVar
 {-# NOINLINE topLevelContextMVar #-}
 
-{- | We keep track of the module spans in this top-level 'IORef' so that it
+{- | We keep track of the module spans in this top-level 'MVar' so that it
      may be shared between the driverPlugin and other plugins.
 
 -}
