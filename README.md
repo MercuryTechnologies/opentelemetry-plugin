@@ -25,7 +25,7 @@ To use this plugin:
 
 - add the `opentelemetry-plugin` package as a build dependency of your package
 
-- add `ghc-options: -fplugin OpenTelemetry.Plugin` to your package
+- add `ghc-options: -plugin-package opentelemetry-plugin -fplugin OpenTelemetry.Plugin` to your package
 
 - configure the appropriate open telemetry environment variables
 
