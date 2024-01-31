@@ -1,3 +1,4 @@
+{-# LANGUAGE EmptyCase #-}
 {-# LANGUAGE BlockArguments    #-}
 {-# LANGUAGE NamedFieldPuns    #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -29,6 +30,7 @@ import GHC.Plugins
     , Plugin(..)
     )
 import qualified Data.Text as Text
+import qualified GHC.Unit.Module.Graph as Graph
 import qualified GHC.Plugins as Plugins
 import qualified GHC.Utils.Outputable as Outputable
 import qualified OpenTelemetry.Plugin.Shared as Shared
@@ -95,14 +97,24 @@ plugin =
                     { runPhaseHook =
                         Just $ PhaseHook \phase -> do
                             case phase of
-                                T_Hsc _ modSummary -> do
+                                T_Hsc phaseHscEnv modSummary -> do
                                     let modName =
                                             Plugins.moduleNameString . Plugins.moduleName . Plugins.ms_mod $
                                                 modSummary
                                         modObjectLocation =
                                             Plugins.ml_obj_file $ Plugins.ms_location modSummary
+                                        -- this is a lazy computation.
+                                        -- otherwise we'd take the
+                                        -- length of this list for
+                                        -- every module, which would be
+                                        -- awful.
+                                        totalModuleCount =
+                                            length . Graph.mgModSummaries $ Plugins.hsc_mod_graph phaseHscEnv
+                                    Shared.recordTotalModuleCount totalModuleCount
                                     Shared.recordModuleStart modObjectLocation modName
+                                    Shared.incrementCompiledModules
                                     runPhase phase
+
                                 T_MergeForeign _pipeEnv _hscEnv objectFilePath _filePaths -> do
                                     -- this phase appears to only be run
                                     -- during compilation, not ghci
@@ -113,6 +125,7 @@ plugin =
                                         _ ->
                                             pure ()
                                     pure x
+
                                 T_HscBackend _pipeEnv _hscEnv modName _hscSrc _modLoc _hscAction  -> do
                                     -- this happens in ghci for sure as
                                     -- a last step
@@ -124,8 +137,8 @@ plugin =
                                             pure ()
                                     pure x
                                 _ -> do
-
                                     runPhase phase
+
                     }
             }
 
