@@ -245,42 +245,48 @@ topLevelSpanMapMVar :: MVar SpanMap
 topLevelSpanMapMVar = Unsafe.unsafePerformIO MVar.newEmptyMVar
 {-# NOINLINE topLevelSpanMapMVar #-}
 
+-- | This function creates a top-level span for the plugin to use to attach
+-- metrics and events to. If the @TRACEPARENT@ and @TRACESTATE@ environment
+-- variables are present and parse correctly, then the trace parent will be
+-- set to that. Otherwise, the span will be it's own parent.
 getTopLevelSpan :: IO Span
 getTopLevelSpan = do
     traceParent <- lookupEnv "TRACEPARENT"
     traceState_ <- lookupEnv "TRACESTATE"
 
-    case W3CTraceContext.decodeSpanContext traceParent traceState_ of
-        Just spanContext ->
-            pure (Trace.Core.wrapSpanContext spanContext)
+    -- We want to associate the span with an external process span, if one
+    -- is available.
+    let mparentSpan = Trace.Core.wrapSpanContext <$> W3CTraceContext.decodeSpanContext traceParent traceState_
 
-        Nothing -> do
-            -- If we're not inheriting a span from
-            -- `TRACEPARENT`/`TRACESTATE`, then create a zero-duration span
-            -- whose sole purpose is to be a parent span for each module's
-            -- spans.
-            --
-            -- Ideally we'd like this span's duration to last for the
-            -- entirety of compilation, but there isn't a good way to end
-            -- the span when compilation is done.  Also, we still need
-            -- *some* parent span for each module's spans, otherwise an
-            -- entirely new trace will be created for each new span.
-            -- Creating a zero-duration span is the least-worst solution.
-            --
-            -- Note that there aren't any issues with the child spans
-            -- lasting longer than the parent span.  This is supported by
-            -- open telemetry and the Haskell API.
-            timestamp <- Trace.Core.getTimestamp
+    -- If we're not inheriting a span from
+    -- `TRACEPARENT`/`TRACESTATE`, then create a zero-duration span
+    -- whose sole purpose is to be a parent span for each module's
+    -- spans.
+    --
+    -- Ideally we'd like this span's duration to last for the
+    -- entirety of compilation, but there isn't a good way to end
+    -- the span when compilation is done.  Also, we still need
+    -- *some* parent span for each module's spans, otherwise an
+    -- entirely new trace will be created for each new span.
+    -- Creating a zero-duration span is the least-worst solution.
+    --
+    -- Note that there aren't any issues with the child spans
+    -- lasting longer than the parent span.  This is supported by
+    -- open telemetry and the Haskell API.
+    timestamp <- Trace.Core.getTimestamp
 
-            let arguments =
-                    Trace.defaultSpanArguments
-                        { startTime = Just timestamp }
+    let arguments =
+            Trace.defaultSpanArguments
+                { startTime = Just timestamp }
 
-            span <- Trace.createSpan tracer Context.empty "opentelemetry GHC plugin" arguments
+    let context =
+            maybe id Context.insertSpan mparentSpan Context.empty
 
-            Trace.endSpan span (Just timestamp)
+    span <- Trace.createSpan tracer context "opentelemetry GHC plugin" arguments
 
-            pure span
+    Trace.endSpan span (Just timestamp)
+
+    pure span
 
 getTopLevelBaggage :: IO Context
 getTopLevelBaggage = do
