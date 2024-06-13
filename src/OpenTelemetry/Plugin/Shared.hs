@@ -39,6 +39,12 @@ module OpenTelemetry.Plugin.Shared
     , newSpanMap
     , recordModuleStart
     , recordModuleEnd
+
+    -- * Recording the modules compiled in the build
+    , recordTotalModuleCount
+    , readTotalModuleCount
+    , readCompiledModulesCount
+    , incrementCompiledModules
     ) where
 
 import Control.Applicative ((<|>))
@@ -52,6 +58,7 @@ import OpenTelemetry.Trace.Sampler (Sampler(..), SamplingResult(..))
 import Prelude hiding (span)
 import System.Random.MWC (GenIO)
 import qualified StmContainers.Map as StmMap
+import Data.IORef (IORef)
 
 import OpenTelemetry.Trace
     ( Attribute(..)
@@ -68,6 +75,7 @@ import OpenTelemetry.Trace
 import qualified Control.Monad as Monad
 import qualified Control.Concurrent.MVar as MVar
 import qualified Data.HashMap.Strict as HashMap
+import qualified Data.IORef as IORef
 import qualified Data.Maybe as Maybe
 import qualified Data.Set as Set
 import qualified Data.Text as Text
@@ -245,42 +253,50 @@ topLevelSpanMapMVar :: MVar SpanMap
 topLevelSpanMapMVar = Unsafe.unsafePerformIO MVar.newEmptyMVar
 {-# NOINLINE topLevelSpanMapMVar #-}
 
+-- | This function creates a top-level span for the plugin to use to attach
+-- metrics and events to. If the @TRACEPARENT@ and @TRACESTATE@ environment
+-- variables are present and parse correctly, then the trace parent will be
+-- set to that. Otherwise, the span will be it's own parent.
 getTopLevelSpan :: IO Span
 getTopLevelSpan = do
     traceParent <- lookupEnv "TRACEPARENT"
     traceState_ <- lookupEnv "TRACESTATE"
 
-    case W3CTraceContext.decodeSpanContext traceParent traceState_ of
-        Just spanContext ->
-            pure (Trace.Core.wrapSpanContext spanContext)
+    -- We want to associate the span with an external process span, if one
+    -- is available.
+    let mparentSpan = Trace.Core.wrapSpanContext <$> W3CTraceContext.decodeSpanContext traceParent traceState_
 
-        Nothing -> do
-            -- If we're not inheriting a span from
-            -- `TRACEPARENT`/`TRACESTATE`, then create a zero-duration span
-            -- whose sole purpose is to be a parent span for each module's
-            -- spans.
-            --
-            -- Ideally we'd like this span's duration to last for the
-            -- entirety of compilation, but there isn't a good way to end
-            -- the span when compilation is done.  Also, we still need
-            -- *some* parent span for each module's spans, otherwise an
-            -- entirely new trace will be created for each new span.
-            -- Creating a zero-duration span is the least-worst solution.
-            --
-            -- Note that there aren't any issues with the child spans
-            -- lasting longer than the parent span.  This is supported by
-            -- open telemetry and the Haskell API.
-            timestamp <- Trace.Core.getTimestamp
+    -- If we're not inheriting a span from
+    -- `TRACEPARENT`/`TRACESTATE`, then create a zero-duration span
+    -- whose sole purpose is to be a parent span for each module's
+    -- spans.
+    --
+    -- Ideally we'd like this span's duration to last for the
+    -- entirety of compilation, but there isn't a good way to end
+    -- the span when compilation is done.  Also, we still need
+    -- *some* parent span for each module's spans, otherwise an
+    -- entirely new trace will be created for each new span.
+    -- Creating a zero-duration span is the least-worst solution.
+    --
+    -- Note that there aren't any issues with the child spans
+    -- lasting longer than the parent span.  This is supported by
+    -- open telemetry and the Haskell API.
+    timestamp <- Trace.Core.getTimestamp
 
-            let arguments =
-                    Trace.defaultSpanArguments
-                        { startTime = Just timestamp }
+    let arguments =
+            Trace.defaultSpanArguments
+                { startTime = Just timestamp }
 
-            span <- Trace.createSpan tracer Context.empty "opentelemetry GHC plugin" arguments
+    let context =
+            maybe id Context.insertSpan mparentSpan Context.empty
 
-            Trace.endSpan span (Just timestamp)
+    span <- Trace.createSpan tracer context "opentelemetry-plugin" arguments
 
-            pure span
+    -- TODO: uh oh. `endSpan` here is going to mean we can't update this
+    -- particular span with the module count. hmm.
+    Trace.endSpan span (Just timestamp)
+
+    pure span
 
 getTopLevelBaggage :: IO Context
 getTopLevelBaggage = do
@@ -489,3 +505,50 @@ recordModuleEnd moduleIdentifier = do
         Trace.endSpan spanReleaseSpan Nothing
         STM.atomically spanReleaseAction
         flushMetricsWhenRootModule spanReleaseModuleName
+
+totalModuleCountVar :: MVar Int
+totalModuleCountVar = Unsafe.unsafePerformIO do
+    MVar.newEmptyMVar
+{-# NOINLINE totalModuleCountVar #-}
+
+writeTotalModuleCountVar :: Int -> IO ()
+writeTotalModuleCountVar i = do
+    Monad.void $ MVar.tryPutMVar totalModuleCountVar i
+
+-- | Read the total module count. This will return 'Nothing' if we have not
+-- found this value, but it probably will be fine if you're reading this
+-- near the end of compilation.
+readTotalModuleCount :: IO (Maybe Int)
+readTotalModuleCount = do
+    MVar.tryReadMVar totalModuleCountVar
+
+-- | Record the total count of modules for the compilation.
+--
+-- For GHC prior to 9.6, this can be done with the 'HscEnv' that is
+-- available at plugin initialization.
+--
+-- For GHC starting at 9.6, this must be done afterwards, because the
+-- module graph is not filled in until at least the 'T_Hsc' phase.
+recordTotalModuleCount
+    :: Int
+    -- ^ This should be the result of finding the number of modules in the
+    -- 'ModuleGraph' type. For GHC 9.6, that should be:
+    --
+    -- @length . mgModSummaries@
+    -> IO ()
+recordTotalModuleCount = writeTotalModuleCountVar
+
+compiledModulesCountVar :: IORef Int
+compiledModulesCountVar = Unsafe.unsafePerformIO do
+    IORef.newIORef 0
+
+-- | Read the amount of modules compiled so far. Note that this won't be
+-- accurate until the end of compilation, so try to avoid calling it until
+-- you're reasonably sure that it's done.
+readCompiledModulesCount :: IO Int
+readCompiledModulesCount = IORef.readIORef compiledModulesCountVar
+
+-- | Call this once per module that is compiled.
+incrementCompiledModules :: IO ()
+incrementCompiledModules =
+    IORef.atomicModifyIORef' compiledModulesCountVar (\i -> (i+1, ()))
