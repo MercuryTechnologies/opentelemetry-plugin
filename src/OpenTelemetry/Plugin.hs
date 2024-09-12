@@ -87,7 +87,9 @@ plugin =
 
         Shared.setRootModuleNames rootModuleNames
 
-        Shared.initializeTopLevelContext
+        let packageName = getPackageName hscEnv
+
+        Shared.initializeTopLevelContext packageName
 
         pure hscEnv
             { hsc_hooks =
@@ -101,7 +103,7 @@ plugin =
                                                 modSummary
                                         modObjectLocation =
                                             Plugins.ml_obj_file $ Plugins.ms_location modSummary
-                                    Shared.recordModuleStart modObjectLocation modName
+                                    Shared.recordModuleStart packageName modObjectLocation modName
                                     runPhase phase
                                 T_MergeForeign _pipeEnv _hscEnv objectFilePath _filePaths -> do
                                     -- this phase appears to only be run
@@ -163,3 +165,10 @@ plugin =
     pluginRecompile = Plugins.purePlugin
 
 data ClosePhase = CloseInHscBackend | CloseInMergeForeign
+
+getPackageName :: HscEnv -> Shared.PackageName
+getPackageName =
+    Shared.PackageName
+        . Plugins.unitIdString
+        . Plugins.homeUnitId_
+        . Plugins.hsc_dflags
