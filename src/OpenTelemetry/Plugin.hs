@@ -169,6 +169,7 @@ data ClosePhase = CloseInHscBackend | CloseInMergeForeign
 getPackageName :: HscEnv -> Shared.PackageName
 getPackageName =
     Shared.PackageName
+        . Text.pack
         . Plugins.unitIdString
         . Plugins.homeUnitId_
         . Plugins.hsc_dflags

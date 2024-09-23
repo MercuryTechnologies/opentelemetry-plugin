@@ -1,4 +1,6 @@
 {-# LANGUAGE BlockArguments    #-}
+{-# LANGUAGE DerivingStrategies    #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving    #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
 
@@ -506,9 +508,6 @@ recordModuleEnd moduleIdentifier = do
 
 -- | The name of the package that is being compiled.
 newtype PackageName = PackageName
-    { unPackageName :: String
+    { unPackageName :: Text
     }
-
-instance Trace.Core.ToAttribute PackageName where
-    toAttribute =
-        Trace.Core.toAttribute . Text.pack . unPackageName
+    deriving newtype Trace.Core.ToAttribute
