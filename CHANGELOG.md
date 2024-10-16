@@ -1,3 +1,7 @@
+# 1.1.1
+
+- The plugin now records the package name in the `packageName` attribute on spans.
+
 # 1.1.0
 
 - The plugin now records much more of the module's compilation. Previously, the

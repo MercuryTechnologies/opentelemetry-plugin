@@ -1,6 +1,6 @@
 cabal-version:      3.0
 name:               opentelemetry-plugin
-version:            1.1.0
+version:            1.1.1
 synopsis:           GHC plugin for open telemetry
 description:        This package provides a GHC plugin that exports each module's build times to an open telemetry collector.  See the included `README` below for more details.
 license:            BSD-3-Clause

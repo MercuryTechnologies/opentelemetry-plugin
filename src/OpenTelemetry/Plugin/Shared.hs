@@ -1,4 +1,6 @@
 {-# LANGUAGE BlockArguments    #-}
+{-# LANGUAGE DerivingStrategies    #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving    #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
 
@@ -22,6 +24,7 @@ module OpenTelemetry.Plugin.Shared
     , initializeTopLevelContext
     , getTopLevelContext
     , modifyContextWithParentSpan
+    , PackageName (..)
 
       -- * Root module names
     , setRootModuleNames
@@ -245,8 +248,10 @@ topLevelSpanMapMVar :: MVar SpanMap
 topLevelSpanMapMVar = Unsafe.unsafePerformIO MVar.newEmptyMVar
 {-# NOINLINE topLevelSpanMapMVar #-}
 
-getTopLevelSpan :: IO Span
-getTopLevelSpan = do
+getTopLevelSpan
+    :: PackageName
+    -> IO Span
+getTopLevelSpan packageName = do
     traceParent <- lookupEnv "TRACEPARENT"
     traceState_ <- lookupEnv "TRACESTATE"
 
@@ -274,7 +279,11 @@ getTopLevelSpan = do
 
             let arguments =
                     Trace.defaultSpanArguments
-                        { startTime = Just timestamp }
+                        { startTime = Just timestamp
+                        , attributes = HashMap.fromList
+                            [ ("packageName", Trace.Core.toAttribute packageName)
+                            ]
+                        }
 
             span <- Trace.createSpan tracer Context.empty "opentelemetry GHC plugin" arguments
 
@@ -301,9 +310,11 @@ lookupEnv = fmap (fmap (fmap encode)) Environment.lookupEnv
     You have to run this command before calling `getTopLevelContext` otherwise
     the latter will hang.
 -}
-initializeTopLevelContext :: IO ()
-initializeTopLevelContext = do
-    span <- getTopLevelSpan
+initializeTopLevelContext
+    :: PackageName
+    -> IO ()
+initializeTopLevelContext packageName = do
+    span <- getTopLevelSpan packageName
 
     context <- getTopLevelBaggage
 
@@ -423,17 +434,22 @@ newSpanMap = SpanMap <$> StmMap.newIO <*> StmMap.newIO
 -- | Create a 'Span' for the given 'ModSummary' and record it in the
 -- 'SpanMap'.
 recordModuleStart
-    :: FilePath
+    :: PackageName
+    -> FilePath
     -- ^ The location of the object file for the module. This should be
     -- available through the 'ModSummary' via 'ms_location' and
     -- 'ml_obj_file'
     -> String
     -- ^ A string representing the name of the module.
     -> IO ()
-recordModuleStart modObjectLocation modName = do
+recordModuleStart packageName modObjectLocation modName = do
     spanMap <- MVar.readMVar topLevelSpanMapMVar
     context <- getTopLevelContext
     span_ <- Trace.createSpan tracer context (Text.pack modName) Trace.defaultSpanArguments
+        { attributes = HashMap.fromList
+            [ ("packageName", Trace.Core.toAttribute packageName)
+            ]
+        }
     let spanRelease =
             SpanRelease
                 { spanReleaseSpan =
@@ -489,3 +505,9 @@ recordModuleEnd moduleIdentifier = do
         Trace.endSpan spanReleaseSpan Nothing
         STM.atomically spanReleaseAction
         flushMetricsWhenRootModule spanReleaseModuleName
+
+-- | The name of the package that is being compiled.
+newtype PackageName = PackageName
+    { unPackageName :: Text
+    }
+    deriving newtype Trace.Core.ToAttribute
