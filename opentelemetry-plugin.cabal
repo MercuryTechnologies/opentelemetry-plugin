@@ -17,7 +17,7 @@ library
     build-depends:    base >=4.18.0.0 && < 5
                     , bytestring
                     , containers
-                    , ghc >= 9.2 && < 9.8
+                    , ghc >= 9.6 && < 9.12
                     , hs-opentelemetry-api >= 0.2.0.0 && < 0.4
                     , hs-opentelemetry-propagator-w3c
                     , hs-opentelemetry-sdk >= 0.1.0.0 && < 0.2

@@ -67,6 +67,7 @@ import OpenTelemetry.Trace
     , Tracer
     , TracerProvider
     , TracerProviderOptions(..)
+    , detectInstrumentationLibrary
     )
 
 import qualified Control.Monad as Monad
