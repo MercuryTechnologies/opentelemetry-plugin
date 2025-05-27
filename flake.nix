@@ -12,7 +12,7 @@
 
   outputs = { all-cabal-hashes, nixpkgs, utils, ... }:
     utils.lib.eachDefaultSystem (system:
-    utils.lib.eachSystem [ "ghc910" "ghc912" ] (compiler:
+    utils.lib.eachSystem [ "ghc910" ] (compiler:
       let
         config = { };
 
