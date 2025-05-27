@@ -1,8 +1,9 @@
-{-# LANGUAGE BlockArguments    #-}
-{-# LANGUAGE DerivingStrategies    #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving    #-}
+{-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE TemplateHaskell #-}
 
 {-| This module provides the GHC-API-agnostic logic for this plugin (mostly
     open telemetry utilities)
@@ -66,6 +67,7 @@ import OpenTelemetry.Trace
     , Tracer
     , TracerProvider
     , TracerProviderOptions(..)
+    , detectInstrumentationLibrary
     )
 
 import qualified Control.Monad as Monad
@@ -173,13 +175,7 @@ tracerProvider = Unsafe.unsafePerformIO do
 
 tracer :: Tracer
 tracer =
-    Trace.makeTracer tracerProvider instrumentationLibrary Trace.tracerOptions
-  where
-    instrumentationLibrary =
-        InstrumentationLibrary
-            { libraryName    = "opentelemetry-plugin"
-            , libraryVersion = Text.pack (Version.showVersion Paths.version)
-            }
+    Trace.makeTracer tracerProvider $(detectInstrumentationLibrary) Trace.tracerOptions
 
 {-| This used by the GHC plugin to create two plugin passes that start and stop
     a `Span`, respectively.
