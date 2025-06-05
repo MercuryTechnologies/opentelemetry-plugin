@@ -1,3 +1,7 @@
+# 1.1.2
+
+- Upgrade dependencies
+
 # 1.1.1
 
 - The plugin now records the package name in the `packageName` attribute on spans.
