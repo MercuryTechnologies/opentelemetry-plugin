@@ -27,18 +27,32 @@
                     self.lib.composeExtensions
                     (_: _: { })
                     [ (self.haskell.lib.packageSourceOverrides {
-                        hs-opentelemetry-api = "0.3.1.0";
+                        hs-opentelemetry-api = "1.0.0.0";
 
-                        hs-opentelemetry-exporter-otlp = "0.1.1.0";
+                        hs-opentelemetry-api-types = "1.0.0.0";
 
-                        hs-opentelemetry-propagator-b3 = "0.0.1.3";
+                        hs-opentelemetry-exporter-handle = "1.0.0.0";
 
-                        hs-opentelemetry-propagator-w3c = "0.1.0.0";
+                        hs-opentelemetry-exporter-in-memory = "1.0.0.0";
 
-                        hs-opentelemetry-sdk = "0.1.0.1";
+                        hs-opentelemetry-exporter-otlp = "1.0.0.0";
 
-                        thread-utils-context = "0.3.0.4";
-                        
+                        hs-opentelemetry-otlp = "1.0.0.0";
+
+                        hs-opentelemetry-propagator-b3 = "1.0.0.0";
+
+                        hs-opentelemetry-propagator-datadog = "1.0.0.0";
+
+                        hs-opentelemetry-propagator-jaeger = "1.0.0.0";
+
+                        hs-opentelemetry-propagator-xray = "1.0.0.0";
+
+                        hs-opentelemetry-propagator-w3c = "1.0.0.0";
+
+                        hs-opentelemetry-sdk = "1.0.0.0";
+
+                        hs-opentelemetry-semantic-conventions = "1.40.0.0";
+
                         proto-lens = "0.7.1.6";
 
                         opentelemetry-plugin =
