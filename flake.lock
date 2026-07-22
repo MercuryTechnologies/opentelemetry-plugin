@@ -3,27 +3,27 @@
     "all-cabal-hashes": {
       "flake": false,
       "locked": {
-        "narHash": "sha256-98V3hYXKgaD9TG/esa7J4b7bRhQ6G+7EdWlSo+Tbe/8=",
+        "narHash": "sha256-pZEUaA6B+F/CHfUkE2NYNsna1ruPgEu/JoQXyumMLUY=",
         "type": "file",
-        "url": "https://api.github.com/repos/commercialhaskell/all-cabal-hashes/tarball/5fe87bd08298ee4e481f14cd5096f1f1fcf1394a"
+        "url": "https://api.github.com/repos/commercialhaskell/all-cabal-hashes/tarball/1b1b8b07a6b0da936c906de2c2cb77a4c407c88f"
       },
       "original": {
         "type": "file",
-        "url": "https://api.github.com/repos/commercialhaskell/all-cabal-hashes/tarball/5fe87bd08298ee4e481f14cd5096f1f1fcf1394a"
+        "url": "https://api.github.com/repos/commercialhaskell/all-cabal-hashes/tarball/1b1b8b07a6b0da936c906de2c2cb77a4c407c88f"
       }
     },
     "nixpkgs": {
       "locked": {
-        "lastModified": 1748026580,
-        "narHash": "sha256-rWtXrcIzU5wm/C8F9LWvUfBGu5U5E7cFzPYT1pHIJaQ=",
+        "lastModified": 1780145889,
+        "narHash": "sha256-md0zn0RnwNvPyASas1yG5YUuwQ4ALA6ucL50l0DvqCo=",
         "owner": "NixOS",
         "repo": "nixpkgs",
-        "rev": "11cb3517b3af6af300dd6c055aeda73c9bf52c48",
+        "rev": "8c50a710ddca43d7a530fb805ad55bde8d0141c5",
         "type": "github"
       },
       "original": {
         "owner": "NixOS",
-        "ref": "25.05",
+        "ref": "26.05",
         "repo": "nixpkgs",
         "type": "github"
       }

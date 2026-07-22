@@ -52,7 +52,8 @@ import Data.ByteString (ByteString)
 import Data.Set (Set)
 import Data.Text (Text)
 import OpenTelemetry.Context (Context)
-import OpenTelemetry.Trace.Sampler (Sampler(..), SamplingResult(..))
+import OpenTelemetry.Plugin.Compat (mkSampler)
+import OpenTelemetry.Trace.Sampler (Sampler, SamplingResult(..))
 import Prelude hiding (span)
 import System.Random.MWC (GenIO)
 import qualified StmContainers.Map as StmMap
@@ -60,7 +61,6 @@ import qualified StmContainers.Map as StmMap
 import OpenTelemetry.Trace
     ( Attribute(..)
     , PrimitiveAttribute(..)
-    , InstrumentationLibrary(..)
     , Span
     , SpanArguments(..)
     , SpanContext(..)
@@ -77,15 +77,12 @@ import qualified Data.Maybe as Maybe
 import qualified Data.Set as Set
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as Text.Encoding
-import qualified Data.Version as Version
 import qualified OpenTelemetry.Context as Context
 import qualified OpenTelemetry.Propagator.W3CBaggage as W3CBaggage
 import qualified OpenTelemetry.Propagator.W3CTraceContext as W3CTraceContext
 import qualified OpenTelemetry.Trace as Trace
 import qualified OpenTelemetry.Trace.Core as Trace.Core
-import qualified OpenTelemetry.Trace.Sampler as Sampler
 import qualified OpenTelemetry.Trace.TraceState as TraceState
-import qualified Paths_opentelemetry_plugin as Paths
 import qualified System.Environment as Environment
 import qualified System.IO.Unsafe as Unsafe
 import qualified System.Random.MWC as MWC
@@ -120,29 +117,22 @@ generator = Unsafe.unsafePerformIO MWC.createSystemRandom
 {-# NOINLINE generator #-}
 
 spanRatioBased :: Double -> Sampler
-spanRatioBased fraction = Sampler
-    { getDescription =
-          "SpanRatioBased{" <> Text.pack (show fraction) <> "}"
-    , shouldSample = \context traceId_ name spanArguments -> do
-        case HashMap.lookup "sample" (attributes spanArguments) of
+spanRatioBased fraction =
+    mkSampler description \context spanArguments -> do
+        traceState_ <- case Context.lookupSpan context of
+            Nothing -> pure TraceState.empty
+            Just span -> traceState <$> Trace.Core.getSpanContext span
+
+        samplingResult <- case HashMap.lookup "sample" (attributes spanArguments) of
             Just (AttributeValue (BoolAttribute True)) -> do
                 random <- MWC.uniformR (0, 1) generator
+                pure (if random < fraction then RecordAndSample else Drop)
 
-                let samplingResult =
-                        if random < fraction then RecordAndSample else Drop
+            _ -> pure RecordAndSample
 
-                traceState_ <- case Context.lookupSpan context of
-                    Nothing ->
-                        pure TraceState.empty
-
-                    Just span ->
-                        fmap traceState (Trace.Core.getSpanContext span)
-
-                pure (samplingResult, HashMap.empty, traceState_)
-
-            _ ->
-                shouldSample Sampler.alwaysOn context traceId_ name spanArguments
-    }
+        pure (samplingResult, HashMap.empty, traceState_)
+  where
+    description = "SpanRatioBased{" <> Text.pack (show fraction) <> "}"
 
 {-| Note: We don't properly shut this down using `Trace.shutdownTracerProvider`,
     but all that the shutdown does is flush metrics, so instead we flush metrics
